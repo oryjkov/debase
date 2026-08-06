@@ -50,10 +50,18 @@ let ghostHeading = null; // absolute heading (deg) of the ghost's initial flight
 
 const params = () => ({
   v0: parseFloat($("sl-v0").value),
-  hTrans: parseFloat($("sl-ht").value),
   glide: parseFloat($("sl-gl").value),
+  vInf: parseFloat($("sl-sp").value),
+  tRamp: parseFloat($("sl-ramp").value),
   hRange: parseFloat($("sl-hr").value),
+  margin: parseFloat($("sl-margin").value), // % sustained-glide derate
 });
+
+// The sliders describe the best-estimate flight; verdicts, surface, and the
+// primary chart line use the PLANNING profile — sustained glide derated by
+// the margin. Safety lives in this visible knob, not inside a skewed fit.
+const planningProfile = (p) =>
+  makeProfile({ ...p, glide: p.glide * (1 - p.margin / 100) });
 
 /* ---------------- init ---------------- */
 async function init() {
@@ -209,6 +217,7 @@ async function setExitAt(lon, lat, fromHash = false, exactLv95 = null, snapOpts 
 }
 
 function neededRadius(p) {
+  // Best-estimate profile reaches further than the derated one — prefetch for it.
   const prof = makeProfile(p);
   return Math.min(Math.max(prof.maxRadius + 150, 1200), 5000);
 }
@@ -223,7 +232,7 @@ function scheduleUpdate() {
 async function update() {
   if (!exit || !viewer) return;
   const p = params();
-  const prof = makeProfile(p);
+  const prof = planningProfile(p);
 
   surface.build(exit.anchor, prof);
   viewer.scene.requestRender();
@@ -266,7 +275,8 @@ function selectHeading(azDeg, keep = false) {
   const i = Math.round(azDeg / (360 / AZ_COUNT)) % AZ_COUNT;
   selectedAz = (i * 360) / AZ_COUNT;
   const p = params();
-  const prof = makeProfile(p);
+  const prof = planningProfile(p);
+  const bestProf = p.margin > 0 ? makeProfile(p) : null;
   const azRad = (selectedAz * Math.PI) / 180;
   const maxDist = Math.min(prof.maxRadius, exit.preparedRadius);
   const samples = dem.sampleRay(exit.e, exit.n, exit.alt, azRad, maxDist, RAY_STEP);
@@ -307,7 +317,7 @@ function selectHeading(azDeg, keep = false) {
 
   $("profile-panel").hidden = false;
   $("profile-title").textContent = `heading ${String(Math.round(selectedAz)).padStart(3, "0")}° · exit ${Math.round(exit.alt)} m`;
-  chart.update(samples, prof, exit.alt, r, selectedAz, trackCurve());
+  chart.update(samples, prof, exit.alt, r, selectedAz, trackCurve(), bestProf);
   // Snap the ghost aim to an explicit dial/surface selection, but leave a
   // manually adjusted aim alone during recomputes (keep=true).
   if (!keep && track) setGhostHeading(selectedAz);
@@ -335,6 +345,7 @@ function loadTrackText(text, name) {
     recomputeTrack();
     setGhostHeading(selectedAz ?? track.flight.heading0 ?? 0);
   } catch (err) {
+    console.error(err);
     status(`track: ${err.message}`, "error");
   }
 }
@@ -342,7 +353,7 @@ function loadTrackText(text, name) {
 function recomputeTrack() {
   const { samples, iExit, iDeploy } = track;
   track.flight = extractFlight(samples, iExit, iDeploy);
-  track.fit = fitModel(track.flight.d, track.flight.drop);
+  track.fit = fitModel(samples, iExit, iDeploy);
   timeline.setData(samples, iExit, iDeploy);
 
   const f = track.flight;
@@ -352,7 +363,8 @@ function recomputeTrack() {
   $("track-readout").textContent =
     `${f.checks.durationS.toFixed(0)} s flight · ${Math.round(f.d[f.d.length - 1])} m out · ` +
     `${Math.round(f.drop[f.drop.length - 1])} m down\n` +
-    `fit: push ${fit.v0.toFixed(1)} m/s · dive ${Math.round(fit.hTrans)} m · glide ${fit.glide.toFixed(2)}\n` +
+    `fit: glide ${fit.glide.toFixed(2)} · speed ${Math.round(fit.vInf)} m/s · ` +
+    `ramp ${fit.tRamp.toFixed(1)} s · push ${fit.v0.toFixed(1)} m/s\n` +
     (drift > 20 ? `⚠ GPS/velocity drift ${Math.round(drift)} m — treat with care` : "");
 
   $("legend-track").hidden = false;
@@ -367,8 +379,9 @@ function applyFit() {
     el.value = Math.max(+el.min, Math.min(+el.max, v));
   };
   clamp("sl-v0", Math.round(track.fit.v0 * 10) / 10);
-  clamp("sl-ht", Math.round(track.fit.hTrans / 5) * 5);
   clamp("sl-gl", Math.round(track.fit.glide * 20) / 20);
+  clamp("sl-sp", Math.round(track.fit.vInf));
+  clamp("sl-ramp", Math.round(track.fit.tRamp * 2) / 2);
   syncOutputs();
   scheduleUpdate();
 }
@@ -494,9 +507,11 @@ function writeHash() {
     exit.e.toFixed(1),
     exit.n.toFixed(1),
     p.v0,
-    p.hTrans,
     p.glide,
+    p.vInf,
+    p.tRamp,
     p.hRange,
+    p.margin,
     selectedAz ?? "",
   ];
   history.replaceState(null, "", "#" + parts.join(","));
@@ -505,12 +520,28 @@ function writeHash() {
 function restoreFromHash() {
   const h = location.hash.slice(1);
   if (!h) return;
-  const [e, n, v0, ht, gl, hr, az] = h.split(",").map((s) => (s === "" ? null : parseFloat(s)));
-  if (!Number.isFinite(e) || !Number.isFinite(n)) return;
-  if (Number.isFinite(v0)) $("sl-v0").value = v0;
-  if (Number.isFinite(ht)) $("sl-ht").value = ht;
-  if (Number.isFinite(gl)) $("sl-gl").value = gl;
-  if (Number.isFinite(hr)) $("sl-hr").value = hr;
+  const f = h.split(",").map((s) => (s === "" ? null : parseFloat(s)));
+  if (!Number.isFinite(f[0]) || !Number.isFinite(f[1])) return;
+  const [e, n] = f;
+  const set = (id, v) => {
+    if (Number.isFinite(v)) $(id).value = v;
+  };
+  let az;
+  if (f.length >= 9) {
+    set("sl-v0", f[2]);
+    set("sl-gl", f[3]);
+    set("sl-sp", f[4]);
+    set("sl-ramp", f[5]);
+    set("sl-hr", f[6]);
+    set("sl-margin", f[7]);
+    az = f[8];
+  } else {
+    // legacy two-phase hash: e,n,v0,hTrans,glide,hRange,az — dive is gone
+    set("sl-v0", f[2]);
+    set("sl-gl", f[4]);
+    set("sl-hr", f[5]);
+    az = f[6];
+  }
   syncOutputs();
   const [lon, lat] = lv95ToWgs84(e, n);
   const anchorView = Cesium.Cartesian3.fromDegrees(lon, lat + 0.018, 3500);
@@ -527,12 +558,14 @@ function restoreFromHash() {
 /* ---------------- UI wiring ---------------- */
 function syncOutputs() {
   $("out-v0").textContent = `${parseFloat($("sl-v0").value).toFixed(1)} m/s`;
-  $("out-ht").textContent = `${$("sl-ht").value} m`;
   $("out-gl").textContent = parseFloat($("sl-gl").value).toFixed(2);
+  $("out-sp").textContent = `${$("sl-sp").value} m/s`;
+  $("out-ramp").textContent = `${parseFloat($("sl-ramp").value).toFixed(1)} s`;
   $("out-hr").textContent = `${$("sl-hr").value} m`;
+  $("out-margin").textContent = `−${$("sl-margin").value} %`;
 }
 
-for (const id of ["sl-v0", "sl-ht", "sl-gl", "sl-hr"]) {
+for (const id of ["sl-v0", "sl-gl", "sl-sp", "sl-ramp", "sl-hr", "sl-margin"]) {
   $(id).addEventListener("input", () => {
     syncOutputs();
     scheduleUpdate();

@@ -19,23 +19,33 @@ Any static host works for deployment (GitHub Pages etc.).
   "Snap to lip" moves the click to the strongest nearby edge — the rendered
   mesh is LOD-simplified, so raw clicks usually land a few metres back
   from the actual lip.
-- Sliders: push speed, dive height (altitude lost before sustained glide),
-  sustained glide ratio, modelled height range. Everything recomputes live.
-- The translucent surface is the two-phase trajectory (1 g dive → glide)
-  revolved through 360°; sector colors are verdicts per 5° heading:
-  green ≥ 100 m min clearance, amber 30–100 m, red < 30 m or strike.
+- Sliders: push speed, sustained glide, sustained speed, lift ramp time,
+  modelled height range, and safety margin. Everything recomputes live.
+- The flight model is point-mass aerodynamics (gravity + drag + lift,
+  RK4-integrated, air density scaling with altitude): sustained glide and
+  speed define the drag/lift coefficients; lift ramps in over the first
+  seconds (suit pressurization). Validated against a real FlySight jump
+  within ~5 m over the first 400 m — the piecewise dive-then-glide model
+  it replaced ignored the horizontal acceleration lift produces during
+  the dive and was ~50 m wrong there.
+- The **margin** slider derates sustained glide for the *planning* profile
+  that drives the surface, verdicts, and chart (best-estimate shown dotted
+  alongside). Safety is a visible knob, never baked into the fit.
+- The translucent surface is the planning trajectory revolved through
+  360°; sector colors are verdicts per 5° heading: green ≥ 100 m min
+  clearance, amber 30–100 m, red < 30 m or strike.
 - Click the dial (or a surface sector) to open the altitude-vs-distance
   profile for that heading, with min-clearance and landing/strike markers.
 - The URL hash encodes exit + parameters + selected heading — shareable.
 - **Track calibration:** load (or drag-drop) a FlySight CSV. Exit and
   deployment are auto-detected from the Doppler velocities (draggable
-  markers to adjust), the flight is extracted as drop-vs-along-track
-  distance, and the two-phase model is fitted to it with an asymmetric
-  loss (a model optimistic about clearance is penalized 25×, so the fit
-  hugs the real flight from below). "Apply fitted model" pushes the fitted
-  push/dive/glide into the sliders; the measured curve shows dashed in the
-  profile chart, and a dashed "ghost" of the actual 3D path renders over
-  terrain. The **aim** slider sets the ghost's initial flight direction
+  markers to adjust), and the ODE model is fitted to the velocity time
+  series with a robust Huber loss — pilot-input segments (a mid-flight
+  dive) get downweighted rather than chased, and the fit is a symmetric
+  best estimate (margins are applied downstream, visibly). "Apply fitted
+  model" pushes glide/speed/ramp/push into the sliders; the measured curve
+  shows dashed in the profile chart, and a dashed "ghost" of the actual 3D
+  path renders over terrain. The **aim** slider sets the ghost's initial flight direction
   (0–359°); it snaps to the heading you pick on the dial, then adjusts
   freely — turns in the track stay rigid, only the whole path rotates.
   "Go to exit" flies to the track's recorded exit, places the evaluation
@@ -59,8 +69,8 @@ Any static host works for deployment (GitHub Pages etc.).
 
 ## Files
 
-- `js/model.js` — two-phase flight model + per-azimuth analysis (unit-tested
-  headlessly with node)
+- `js/model.js` — aerodynamic ODE flight model + per-azimuth analysis
+  (unit-tested headlessly with node)
 - `js/dem.js` — STAC tile discovery, COG reads, lip snapping, ray sampling
 - `js/lv95.js` — swisstopo approximate WGS84↔LV95 formulas (~1 m)
 - `js/surface.js` — the revolved capture surface (one instance per sector)

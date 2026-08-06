@@ -42,9 +42,11 @@ export class ProfileChart {
    * @param analysis analyzeAzimuth() result
    * @param azimuth  degrees, for the title row
    * @param track    optional measured curve {d: [], drop: []} (FlySight)
+   * @param best     optional best-estimate profile (no safety margin) shown
+   *                 as a faint dotted line next to the planning curve
    */
-  update(samples, profile, exitAlt, analysis, azimuth, track = null) {
-    this.state = { samples, profile, exitAlt, analysis, azimuth, track };
+  update(samples, profile, exitAlt, analysis, azimuth, track = null, best = null) {
+    this.state = { samples, profile, exitAlt, analysis, azimuth, track, best };
     this.draw();
   }
 
@@ -135,7 +137,7 @@ export class ProfileChart {
       ctx.fill();
     }
 
-    // trajectory
+    // trajectory (planning profile — margin applied)
     ctx.beginPath();
     ctx.moveTo(L.x(0), L.y(exitAlt));
     for (let d = 0; d <= Math.min(L.maxD, profile.maxRadius); d += 5) {
@@ -144,6 +146,27 @@ export class ProfileChart {
     ctx.strokeStyle = INK.flight;
     ctx.lineWidth = 2;
     ctx.stroke();
+
+    // best-estimate (no margin): faint dotted companion line
+    const best = this.state.best;
+    if (best) {
+      ctx.beginPath();
+      ctx.moveTo(L.x(0), L.y(exitAlt));
+      for (let d = 0; d <= Math.min(L.maxD, best.maxRadius); d += 5) {
+        ctx.lineTo(L.x(d), L.y(exitAlt - best.dropAt(d)));
+      }
+      ctx.strokeStyle = "rgba(127,189,245,0.5)";
+      ctx.lineWidth = 1.2;
+      ctx.setLineDash([2, 4]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      const dB = Math.min(L.maxD, best.maxRadius) * 0.62;
+      ctx.fillStyle = "rgba(127,189,245,0.6)";
+      ctx.font = "10px 'Archivo', sans-serif";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "bottom";
+      ctx.fillText("best est.", L.x(dB) + 4, L.y(exitAlt - best.dropAt(dB)) - 3);
+    }
 
     // measured track curve (dashed, direct-labeled)
     const track = this.state.track;

@@ -7,7 +7,7 @@
  * weak anchor and for the ghost path's absolute placement.
  */
 
-import { makeProfile } from "./model.js";
+import { simulate } from "./model.js";
 
 /**
  * Parse FlySight 1 CSV text.
@@ -185,49 +185,78 @@ export function extractFlight(samples, iExit, iEnd) {
 }
 
 /**
- * Fit the two-phase model (v0, hTrans, glide) to a measured profile,
- * coarse grid then local refinement. hRange is set to the measured drop so
- * the fit only spans real data.
+ * Fit the ODE model to the flight's velocity time series.
  *
- * The loss is asymmetric: a model that sits ABOVE the real flight
- * (dropAt < measured) is optimistic about clearance, so those residuals
- * are weighted 25× — the fitted curve hugs the measured one from below.
+ * The Doppler velocities are the strongest signal in the file, so the fit
+ * runs in the velocity domain: Huber loss (robust — pilot-input segments
+ * like a mid-flight dive get downweighted, not chased) on both horizontal
+ * speed and sink vs the integrated model. Push speed is read directly from
+ * the data. Symmetric best estimate — safety margins are applied
+ * explicitly downstream, not baked into the fit.
+ *
+ * Returns {v0, glide, vInf, tRamp, err} where err ≈ mean velocity misfit.
  */
-export function fitModel(d, drop) {
-  const hRange = drop[drop.length - 1];
-  const OPTIMISM_W = 25;
-  const rms = (v0, hTrans, glide) => {
-    const prof = makeProfile({ v0, hTrans, glide, hRange });
-    let s = 0;
-    for (let i = 0; i < d.length; i++) {
-      const r = prof.dropAt(d[i]) - drop[i];
-      s += r < 0 ? OPTIMISM_W * r * r : r * r;
-    }
-    return Math.sqrt(s / d.length);
-  };
-
-  let best = { v0: 2.5, hTrans: 90, glide: 1.4, err: Infinity };
-  const consider = (v0, hTrans, glide) => {
-    const err = rms(v0, hTrans, glide);
-    if (err < best.err) best = { v0, hTrans, glide, err };
-  };
-  for (let v0 = 0; v0 <= 5; v0 += 0.5)
-    for (let hTrans = 30; hTrans <= Math.min(300, hRange * 0.8); hTrans += 15)
-      for (let glide = 0.8; glide <= 3.5; glide += 0.1) consider(v0, hTrans, glide);
-
-  // Local refinement: shrink steps around the best point.
-  let step = { v0: 0.25, hTrans: 7.5, glide: 0.05 };
-  for (let round = 0; round < 12; round++) {
-    const b = { ...best };
-    for (const dv of [-step.v0, 0, step.v0])
-      for (const dh of [-step.hTrans, 0, step.hTrans])
-        for (const dg of [-step.glide, 0, step.glide])
-          consider(
-            Math.max(0, b.v0 + dv),
-            Math.max(20, b.hTrans + dh),
-            Math.max(0.5, b.glide + dg)
-          );
-    step = { v0: step.v0 * 0.7, hTrans: step.hTrans * 0.7, glide: step.glide * 0.7 };
+export function fitModel(samples, iExit, iEnd) {
+  const t0 = samples[iExit].t;
+  const meas = [];
+  for (let i = iExit; i <= iEnd; i++) {
+    const s = samples[i];
+    meas.push({ t: s.t - t0, vh: Math.hypot(s.vn, s.ve), vd: s.vd });
   }
-  return best;
+  const dur = meas[meas.length - 1].t;
+
+  // Push speed straight from the data: median vh over the first 0.6 s.
+  const early = meas
+    .filter((q) => q.t <= 0.6)
+    .map((q) => q.vh)
+    .sort((a, b) => a - b);
+  const v0 = Math.min(6, early[Math.floor(early.length / 2)] ?? 2.5);
+
+  const huber = (r, d = 3) =>
+    Math.abs(r) < d ? 0.5 * r * r : d * (Math.abs(r) - 0.5 * d);
+
+  const loss = (glide, vInf, tRamp, dt) => {
+    const sim = simulate(
+      { v0, glide, vInf, tRamp, hRange: Infinity },
+      { dt, tMax: dur + dt }
+    );
+    let s = 0;
+    for (const q of meas) {
+      const i = Math.min(sim.t.length - 1, Math.round(q.t / dt));
+      s += huber(q.vh - sim.vx[i]) + huber(q.vd - -sim.vz[i]);
+    }
+    return s / meas.length;
+  };
+
+  // Coarse grid at a large step size, then shrinking local refinement at a
+  // fine one (losses at different dt aren't compared with each other).
+  let best = { glide: 1.7, vInf: 33, tRamp: 1, err: Infinity };
+  for (let glide = 0.7; glide <= 3.45; glide += 0.15) {
+    for (let vInf = 24; vInf <= 62; vInf += 2.5) {
+      for (const tRamp of [0, 2, 4]) {
+        const err = loss(glide, vInf, tRamp, 0.08);
+        if (err < best.err) best = { glide, vInf, tRamp, err };
+      }
+    }
+  }
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  best.err = loss(best.glide, best.vInf, best.tRamp, 0.03);
+  let step = { glide: 0.1, vInf: 1.5, tRamp: 1 };
+  for (let round = 0; round < 10; round++) {
+    const b = { ...best };
+    for (const dg of [-step.glide, 0, step.glide]) {
+      for (const dv of [-step.vInf, 0, step.vInf]) {
+        for (const dr of [-step.tRamp, 0, step.tRamp]) {
+          if (!dg && !dv && !dr) continue;
+          const glide = clamp(b.glide + dg, 0.5, 4);
+          const vInf = clamp(b.vInf + dv, 20, 70);
+          const tRamp = clamp(b.tRamp + dr, 0, 8);
+          const err = loss(glide, vInf, tRamp, 0.03);
+          if (err < best.err) best = { glide, vInf, tRamp, err };
+        }
+      }
+    }
+    step = { glide: step.glide * 0.7, vInf: step.vInf * 0.7, tRamp: step.tRamp * 0.7 };
+  }
+  return { v0, ...best };
 }

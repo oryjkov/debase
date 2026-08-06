@@ -1,48 +1,176 @@
 /**
- * Two-phase wingsuit exit model.
+ * Wingsuit flight model: point-mass aerodynamics.
  *
- * Phase 1 — dive: horizontal push at v0, vertical 1 g ballistic drop until
- *   `hTrans` metres of altitude have been lost (the "height to start flying").
- * Phase 2 — glide: constant sustained glide ratio `glide` (horizontal per
- *   vertical) from the end of the dive.
+ *   accel = gravity + drag(−kd·V·v) + lift(kl·V·v⊥)
  *
- * Everything is expressed as drop-below-exit (metres) vs horizontal distance
- * from the exit (metres), so it is independent of height datum.
+ * validated against FlySight Doppler velocities — per-sample coefficient
+ * estimates are near-constant through hands-off flight, and the integrated
+ * trajectory matches a real jump within ~5 m over the first 400 m (where
+ * the old two-phase model was off by ~50 m: it ignored the horizontal
+ * acceleration that lift produces during the dive).
+ *
+ * Parameters are jumper-meaningful: sustained glide L/D and sustained total
+ * speed vInf define (kl, kd) via the steady-state balance
+ *   sqrt(kl²+kd²)·vInf² = g,   kl/kd = glide.
+ * `tRamp` linearly ramps LIFT from 0 to full over the first seconds
+ * (suit pressurization / dive-out); drag is present from the start.
+ * Coefficients scale with air density as the flight descends (ρ ∝ e^(drop/H)).
+ *
+ * Everything is expressed as drop-below-exit vs horizontal distance, so it
+ * is independent of height datum.
  */
 
 export const G = 9.81;
+const RHO_SCALE_H = 8500; // m, exponential atmosphere scale height
 
 export const DEFAULT_PARAMS = {
-  v0: 2.5,      // horizontal push speed, m/s
-  hTrans: 90,   // altitude lost before sustained glide, m
-  glide: 1.4,   // sustained glide ratio (horizontal / vertical)
+  v0: 2.5,    // horizontal push speed, m/s
+  glide: 1.7, // sustained glide ratio (horizontal / vertical)
+  vInf: 33,   // sustained total speed, m/s
+  tRamp: 1,   // seconds for lift to build to full
   hRange: 1200, // model the surface down to this many metres below exit
 };
 
-/** Build a trajectory profile from params. */
+/** Steady-state (kl, kd) at exit altitude for given glide/speed targets. */
+export function coefficientsFor(glide, vInf) {
+  const kd = G / (vInf * vInf * Math.sqrt(1 + glide * glide));
+  return { kl: glide * kd, kd };
+}
+
+/**
+ * Integrate the ODE with RK4. Returns parallel arrays {t, x, drop, vx, vz}.
+ * Stops at drop ≥ hRange, t ≥ tMax, or a hard 600 s cap.
+ */
+export function simulate(params, { dt = 0.02, tMax = Infinity, hRange = null } = {}) {
+  const p = { ...DEFAULT_PARAMS, ...params };
+  const stopDrop = hRange ?? p.hRange;
+  const { kl, kd } = coefficientsFor(p.glide, p.vInf);
+
+  // state: [x, z, vx, vz], z negative below exit
+  const deriv = (s, t) => {
+    const rho = Math.exp(-s[1] / RHO_SCALE_H); // drop = −z ⇒ ρ grows descending
+    const ramp = p.tRamp > 0 ? Math.min(1, t / p.tRamp) : 1;
+    const kdE = kd * rho;
+    const klE = kl * rho * ramp;
+    const V = Math.hypot(s[2], s[3]);
+    return [
+      s[2],
+      s[3],
+      -kdE * V * s[2] - klE * V * s[3],
+      -G - kdE * V * s[3] + klE * V * s[2],
+    ];
+  };
+
+  let s = [0, 0, p.v0, 0];
+  let t = 0;
+  const out = { t: [0], x: [0], drop: [0], vx: [p.v0], vz: [0] };
+  while (-s[1] < stopDrop && t < tMax && t < 600) {
+    const k1 = deriv(s, t);
+    const s2 = s.map((v, i) => v + (dt / 2) * k1[i]);
+    const k2 = deriv(s2, t + dt / 2);
+    const s3 = s.map((v, i) => v + (dt / 2) * k2[i]);
+    const k3 = deriv(s3, t + dt / 2);
+    const s4 = s.map((v, i) => v + dt * k3[i]);
+    const k4 = deriv(s4, t + dt);
+    s = s.map((v, i) => v + (dt / 6) * (k1[i] + 2 * k2[i] + 2 * k3[i] + k4[i]));
+    t += dt;
+    out.t.push(t);
+    out.x.push(s[0]);
+    out.drop.push(-s[1]);
+    out.vx.push(s[2]);
+    out.vz.push(s[3]);
+  }
+  return out;
+}
+
+/**
+ * Build a trajectory profile: integrates once into a lookup table.
+ * Returned object keeps the interface analyzeAzimuth/surface expect:
+ * dropAt, radiusAt, maxRadius, hTrans (drop where the flight is "flying" —
+ * instantaneous L/D reaches 90% of sustained), d1 (distance there), glide.
+ */
 export function makeProfile(params) {
-  const { v0, hTrans, glide, hRange } = { ...DEFAULT_PARAMS, ...params };
-  const t1 = Math.sqrt((2 * hTrans) / G);
-  const d1 = v0 * t1; // horizontal distance covered during the dive
+  const p = { ...DEFAULT_PARAMS, ...params };
+  const sim = simulate(p);
+  const n = sim.x.length;
+
+  // Monotonic drop table (a strong flare could momentarily climb; flatten
+  // it so dropAt/radiusAt stay well-defined).
+  const drops = new Float64Array(n);
+  let m = 0;
+  for (let i = 0; i < n; i++) {
+    m = Math.max(m, sim.drop[i]);
+    drops[i] = m;
+  }
+  const xs = sim.x;
+
+  // Transition point ("established flight"): find the dive bottom (minimum
+  // instantaneous glide ratio, ignoring the first moments before sink
+  // develops), then the first recovery to 85% of sustained. Anchoring on
+  // the dive bottom avoids false-triggering on the push in the first
+  // half-second; if recovery never happens inside the modelled range
+  // (slick with a short range), the whole range counts as still-diving.
+  let iMin = 0;
+  let rMin = Infinity;
+  for (let i = 0; i < n; i++) {
+    const sink = -sim.vz[i];
+    if (sink < 3) continue;
+    const r = sim.vx[i] / sink;
+    if (r < rMin) {
+      rMin = r;
+      iMin = i;
+    }
+  }
+  let iTrans = n - 1;
+  for (let i = iMin; i < n; i++) {
+    if (sim.vx[i] / -sim.vz[i] >= 0.85 * p.glide) {
+      iTrans = i;
+      break;
+    }
+  }
+  const hTrans = drops[iTrans];
+  const d1 = xs[iTrans];
+
+  const lastX = xs[n - 1];
+  const lastDrop = drops[n - 1];
+
+  const idxFor = (arr, v) => {
+    let lo = 0;
+    let hi = n - 1;
+    while (hi - lo > 1) {
+      const mid = (lo + hi) >> 1;
+      if (arr[mid] < v) lo = mid;
+      else hi = mid;
+    }
+    return lo;
+  };
 
   /** Drop below exit at horizontal distance d (monotonic, m). */
   function dropAt(d) {
     if (d <= 0) return 0;
-    if (d < d1) {
-      const t = d / v0;
-      return (G / 2) * t * t;
-    }
-    return hTrans + (d - d1) / glide;
+    if (d >= lastX) return lastDrop + (d - lastX) / p.glide;
+    const i = idxFor(xs, d);
+    const f = (d - xs[i]) / Math.max(1e-9, xs[i + 1] - xs[i]);
+    return drops[i] + (drops[i + 1] - drops[i]) * f;
   }
 
   /** Horizontal distance at which the trajectory has dropped h metres. */
   function radiusAt(h) {
     if (h <= 0) return 0;
-    if (h < hTrans) return v0 * Math.sqrt((2 * h) / G);
-    return d1 + (h - hTrans) * glide;
+    if (h >= lastDrop) return lastX + (h - lastDrop) * p.glide;
+    const i = idxFor(drops, h);
+    const f = (h - drops[i]) / Math.max(1e-9, drops[i + 1] - drops[i]);
+    return xs[i] + (xs[i + 1] - xs[i]) * f;
   }
 
-  return { v0, hTrans, glide, hRange, t1, d1, dropAt, radiusAt, maxRadius: radiusAt(hRange) };
+  return {
+    ...p,
+    hTrans,
+    d1,
+    dropAt,
+    radiusAt,
+    maxRadius: radiusAt(p.hRange),
+  };
 }
 
 /**
@@ -122,7 +250,7 @@ export function analyzeAzimuth(profile, samples, opts = {}) {
       minClearanceD = d;
     }
     if (d <= profile.d1) {
-      // Terrain above the ballistic dive curve: no glide ratio can help.
+      // Terrain above the dive curve: no glide ratio can help.
       if (c < 0) requiredGlide = Infinity;
     } else if (tDrop <= profile.hTrans) {
       // Terrain at/above the dive-end altitude beyond the dive: unreachable.
