@@ -24,6 +24,7 @@ export class Dem {
     this.items = new Map(); // key -> {href05, href2}
     this.tiles2 = new Map(); // key -> Promise<{data,w,h,e0,n1,res}> (2 m grids)
     this.tiffs = new Map(); // href -> Promise<GeoTIFF>
+    this.near = null; // composite 0.5 m grid around the current exit
   }
 
   /**
@@ -228,6 +229,108 @@ export class Dem {
       }
     }
     return { e: best.e, n: best.n, moved: Math.hypot(best.e - e, best.n - n) };
+  }
+
+  /**
+   * Load a composite 0.5 m grid covering ±radius metres around (e, n) —
+   * windowed range-reads from up to four 1 km COGs blitted into one array.
+   * Powers the near-field clearance analysis; call after prepare().
+   */
+  async loadNearField(e, n, radius = 170) {
+    const res = 0.5;
+    const west = e - radius;
+    const north = n + radius;
+    const size = Math.ceil((2 * radius) / res);
+    const data = new Float32Array(size * size).fill(NaN);
+
+    const jobs = [];
+    for (const ek of [Math.floor(west / 1000), Math.floor((e + radius) / 1000)]) {
+      for (const nk of [Math.floor((n - radius) / 1000), Math.floor(north / 1000)]) {
+        const key = `${ek}-${nk}`;
+        if (jobs.some((j) => j.key === key)) continue;
+        const item = this.items.get(key);
+        if (item?.href05) jobs.push({ key, href: item.href05 });
+      }
+    }
+    await Promise.all(
+      jobs.map(async ({ href }) => {
+        try {
+          const tiff = await this._tiff(href);
+          const img = await tiff.getImage(0);
+          const [te0, tn1] = img.getOrigin();
+          const tres = Math.abs(img.getResolution()[0]);
+          // overlap of the composite with this tile, in tile pixels
+          const x0 = Math.max(0, Math.floor((west - te0) / tres));
+          const y0 = Math.max(0, Math.floor((tn1 - north) / tres));
+          const x1 = Math.min(img.getWidth(), Math.ceil((west + size * res - te0) / tres));
+          const y1 = Math.min(img.getHeight(), Math.ceil((tn1 - (north - size * res)) / tres));
+          if (x1 <= x0 || y1 <= y0) return;
+          const win = await img.readRasters({ window: [x0, y0, x1, y1], interleave: true });
+          const ww = x1 - x0;
+          for (let y = y0; y < y1; y++) {
+            const gy = Math.round((tn1 - y * tres - north) / -res);
+            if (gy < 0 || gy >= size) continue;
+            for (let x = x0; x < x1; x++) {
+              const gx = Math.round((te0 + x * tres - west) / res);
+              if (gx < 0 || gx >= size) continue;
+              const v = win[(y - y0) * ww + (x - x0)];
+              if (v > NODATA_BELOW) data[gy * size + gx] = v;
+            }
+          }
+        } catch {
+          // missing fine tile: stays NaN, near-field falls back to no-data
+        }
+      })
+    );
+    this.near = { data, size, west, north, res };
+    return this.near;
+  }
+
+  /** Upper envelope: max of the 4 posts around (E, N) on the 0.5 m grid. */
+  nearMax(E, N) {
+    const g = this.near;
+    if (!g) return NaN;
+    const x = (E - g.west) / g.res - 0.5;
+    const y = (g.north - N) / g.res - 0.5;
+    const xi = Math.floor(x);
+    const yi = Math.floor(y);
+    let mx = -Infinity;
+    for (const [dx, dy] of [[0, 0], [1, 0], [0, 1], [1, 1]]) {
+      const xx = xi + dx;
+      const yy = yi + dy;
+      if (xx < 0 || yy < 0 || xx >= g.size || yy >= g.size) continue;
+      const v = g.data[yy * g.size + xx];
+      if (Number.isFinite(v) && v > mx) mx = v;
+    }
+    return mx === -Infinity ? NaN : mx;
+  }
+
+  /**
+   * Near-field terrain profile along one azimuth: envelope over a lateral
+   * swath (the terrain dilated by DEM + exit-position uncertainty).
+   * Returns [{d, tDrop}] at `step` spacing; tDrop uses the HIGHEST ground
+   * found across offsets — conservative by construction.
+   */
+  nearRay(e, n, exitAlt, azimuth, maxDist = 150, step = 0.5, lateral = [-2.5, 0, 2.5]) {
+    const se = Math.sin(azimuth);
+    const cn = Math.cos(azimuth);
+    const out = [];
+    for (let d = step; d <= maxDist; d += step) {
+      // The swath widens with distance (an uncertainty cone): right off the
+      // lip your lateral position is exact — full-width offsets there would
+      // sample the very ridge the exit sits on.
+      const grow = Math.min(1, d / 25);
+      let hi = -Infinity;
+      for (const off0 of lateral) {
+        const off = off0 * grow;
+        const E = e + se * d + cn * off;
+        const N = n + cn * d - se * off;
+        const z = this.nearMax(E, N);
+        if (Number.isFinite(z) && z > hi) hi = z;
+      }
+      out.push({ d, tDrop: hi === -Infinity ? NaN : exitAlt - hi });
+    }
+    return out;
   }
 
   /**

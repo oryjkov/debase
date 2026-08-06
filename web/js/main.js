@@ -1,5 +1,12 @@
 import { wgs84ToLv95, lv95ToWgs84 } from "./lv95.js";
-import { makeProfile, analyzeAzimuth, verdictFor } from "./model.js";
+import {
+  makeProfile,
+  analyzeAzimuth,
+  analyzeNearField,
+  verdictFor,
+  nearVerdictFor,
+  worseVerdict,
+} from "./model.js";
 import { Dem } from "./dem.js";
 import { TrajectorySurface } from "./surface.js";
 import { HeadingDial } from "./dial.js";
@@ -173,6 +180,8 @@ async function setExitAt(lon, lat, fromHash = false, exactLv95 = null, snapOpts 
       n = s.n;
       moved = s.moved;
     }
+    status("loading 0.5 m near-field…", "busy");
+    await dem.loadNearField(e, n, 170);
     const alt = await dem.elevation05(e, n);
     if (!Number.isFinite(alt)) {
       status("no elevation data here", "error");
@@ -254,17 +263,23 @@ async function update() {
   results = [];
   for (let i = 0; i < AZ_COUNT; i++) {
     const az = (i * 2 * Math.PI) / AZ_COUNT;
+    // Near field: 0.5 m envelope + perpendicular clearance (first 150 m).
+    // Far field: 2 m vertical clearance, starting where the near field ends.
+    const near = analyzeNearField(prof, dem.nearRay(exit.e, exit.n, exit.alt, az));
     const samples = dem.sampleRay(exit.e, exit.n, exit.alt, az, maxDist, RAY_STEP);
-    results.push(analyzeAzimuth(prof, samples));
+    const far = analyzeAzimuth(prof, samples, { dMin: 140 });
+    far.near = near;
+    far.verdict = worseVerdict(nearVerdictFor(near), verdictFor(far.minClearance));
+    results.push(far);
   }
 
-  const colors = results.map((r) => VERDICT_CSS[verdictFor(r.minClearance)]);
+  const colors = results.map((r) => VERDICT_CSS[r.verdict]);
   surface.build(exit.anchor, prof, colors);
   viewer.scene.requestRender();
   dial.update({ colors, enabled: true });
 
-  const nGreen = results.filter((r) => verdictFor(r.minClearance) === "green").length;
-  const nAmber = results.filter((r) => verdictFor(r.minClearance) === "amber").length;
+  const nGreen = results.filter((r) => r.verdict === "green").length;
+  const nAmber = results.filter((r) => r.verdict === "amber").length;
   status(`${nGreen * 5}° clear, ${nAmber * 5}° tight`);
 
   if (selectedAz !== null) selectHeading(selectedAz, true);
@@ -285,10 +300,24 @@ function selectHeading(azDeg, keep = false) {
   const r = results[i];
 
   dial.update({ selected: selectedAz });
-  const v = verdictFor(r.minClearance);
+  const v = r.verdict ?? verdictFor(r.minClearance);
+  const near = r.near;
+  // measured rock drop from the 0.5 m envelope, model-free
+  const nearSamples = dem.nearRay(exit.e, exit.n, exit.alt, azRad, 25);
+  const dropAtOut = (dd) => {
+    const s = nearSamples.find((q) => q.d >= dd);
+    return s && Number.isFinite(s.tDrop) ? Math.round(s.tDrop) : "–";
+  };
+  let nearLine;
+  if (near?.strike) nearLine = `wall strike ~${Math.round(near.strikeD)} m out\n`;
+  else if (near && Number.isFinite(near.minRatio))
+    nearLine = `air ${near.minAir.toFixed(1)} m @ ${Math.round(near.minAirD)} m out (×${near.minRatio.toFixed(1)} of needed)\n`;
+  else nearLine = "";
   $("heading-stats").className = "readout";
   $("heading-stats").textContent =
     `${String(Math.round(selectedAz)).padStart(3, "0")}°  ${v === "nodata" ? "no data" : v.toUpperCase()}\n` +
+    nearLine +
+    `drop @5/10/20 m out: ${dropAtOut(5)}/${dropAtOut(10)}/${dropAtOut(20)} m\n` +
     (Number.isFinite(r.minClearance)
       ? `min clearance ${Math.round(r.minClearance)} m @ ${Math.round(r.minClearanceD)} m\n`
       : "") +
@@ -596,6 +625,7 @@ const HELP = {
   snap: ["snap to lip", "Clicks land on the rendered 3D mesh, which is metres coarser than the real data — usually a step back from the edge. Snapping moves the exit to the strongest nearby drop; for a track's exit it also matches the GPS altitude, since horizontal GPS error tends to put the point over the edge."],
   ghost: ["ghost", "Shows the recorded flight path, translated to the current exit with its turns preserved. Dashed violet in 3D and in the profile chart."],
   aim: ["aim", "Compass direction of the ghost's initial flight. It snaps to the heading you pick on the dial, then adjusts freely — the whole recorded path rotates rigidly around the exit."],
+  verdicts: ["heading verdicts", "Each 5° heading combines two checks and shows the worse. Near the exit (first 150 m, 0.5 m terrain dilated by position uncertainty): metres of air between the flight path and rock, which must grow as the flight develops — red under ×1 of needed, amber under ×2. Further out (2 m terrain): vertical clearance under the planning trajectory — red below 30 m, amber below 100 m."],
 };
 const helpPop = document.createElement("div");
 helpPop.id = "help-pop";

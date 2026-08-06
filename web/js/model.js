@@ -268,12 +268,123 @@ export function analyzeAzimuth(profile, samples, opts = {}) {
   return { minClearance, minClearanceD, requiredGlide, impactD, impactKind };
 }
 
+/**
+ * Near-field analysis: perpendicular clearance over the first ~150 m.
+ *
+ * Vertical clearance is ill-conditioned against near-vertical terrain
+ * (±0.5 m of horizontal DEM registration swings it by tens of metres), so
+ * close to the exit we measure the minimum DISTANCE from the trajectory
+ * curve to the terrain polyline in the ray's vertical plane — "metres of
+ * air between you and rock". The terrain samples should come from the
+ * 0.5 m upper-envelope swath (Dem.nearRay), which is already dilated by
+ * position uncertainty.
+ *
+ * Every workable big-wall exit flies within metres of the wall in the
+ * first seconds — absolute air thresholds would condemn all of them. What
+ * distinguishes good from bad is that clearance must GROW as the flight
+ * develops, so each trajectory point's air is compared against a required
+ * clearance that expands with altitude lost (an uncertainty cone):
+ *   required(drop) = 1 + 0.08·drop, capped at 12 m.
+ * The verdict is driven by the worst air/required ratio.
+ *
+ * @param profile  makeProfile() result
+ * @param samples  [{d, tDrop}] envelope terrain, fine spacing, ordered
+ * @returns {minRatio, minAir, minAirD, strike, strikeD}
+ *   minRatio smallest air/required over the ray (NaN if no data)
+ *   minAir   the air at that worst point, m; minAirD its distance out
+ *   strike   true if the trajectory dips below the envelope terrain
+ */
+export function analyzeNearField(profile, samples) {
+  const required = (drop) => Math.min(12, 1 + 0.08 * drop);
+  // Terrain polyline points (d, -tDrop); NaN gaps split segments. Points
+  // within 8 m of the exit are excluded — that is the launch zone the
+  // trajectory necessarily shares with the rock (rounded lips included).
+  const LIP_R = 8;
+  const pts = [];
+  for (const s of samples) {
+    const usable = Number.isFinite(s.tDrop) && Math.hypot(s.d, s.tDrop) > LIP_R;
+    pts.push(usable ? [s.d, -s.tDrop] : null);
+  }
+  if (!pts.some(Boolean)) return { minRatio: NaN, minAir: NaN, minAirD: null, strike: false, strikeD: null };
+
+  const maxD = samples[samples.length - 1].d;
+  let minRatio = Infinity;
+  let minAir = NaN;
+  let minAirD = null;
+  let strike = false;
+  let strikeD = null;
+
+  const distToSeg = (px, py, ax, ay, bx, by) => {
+    const dx = bx - ax;
+    const dy = by - ay;
+    const L2 = dx * dx + dy * dy;
+    const t = L2 > 0 ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / L2)) : 0;
+    return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+  };
+
+  // envelope drop at distance d (samples are uniformly spaced from step)
+  const step = samples[0].d;
+  const dropEnv = (d) => {
+    const i = Math.min(samples.length - 1, Math.max(0, Math.round(d / step) - 1));
+    return samples[i]?.tDrop;
+  };
+
+  for (let d = 2; d <= maxD; d += 1) {
+    const drop = profile.dropAt(d);
+    const tz = -drop;
+    const env = dropEnv(d);
+    // Inside test gets the same lip exclusion as the polyline.
+    if (Number.isFinite(env) && Math.hypot(d, env) > LIP_R && drop > env) {
+      // trajectory below the (dilated) ground: inside rock
+      strike = true;
+      strikeD = d;
+      break;
+    }
+    // nearest terrain within a ±60 m window of segments
+    let air = Infinity;
+    for (let i = 1; i < pts.length; i++) {
+      const a = pts[i - 1];
+      const b = pts[i];
+      if (!a || !b) continue;
+      if (b[0] < d - 60) continue;
+      if (a[0] > d + 60) break;
+      const dist = distToSeg(d, tz, a[0], a[1], b[0], b[1]);
+      if (dist < air) air = dist;
+    }
+    if (air === Infinity) continue;
+    const ratio = air / required(drop);
+    if (ratio < minRatio) {
+      minRatio = ratio;
+      minAir = air;
+      minAirD = d;
+    }
+  }
+  if (minRatio === Infinity) minRatio = NaN;
+  return { minRatio, minAir, minAirD, strike, strikeD };
+}
+
 /** Verdict thresholds (metres of minimum clearance). */
 export const VERDICT = { red: 30, amber: 100 };
+/** Near-field thresholds on the air/required ratio. */
+export const NEAR_VERDICT = { red: 1, amber: 2 };
 
 export function verdictFor(minClearance) {
   if (!Number.isFinite(minClearance)) return "nodata";
   if (minClearance < VERDICT.red) return "red";
   if (minClearance < VERDICT.amber) return "amber";
   return "green";
+}
+
+export function nearVerdictFor(near) {
+  if (near.strike) return "red";
+  if (!Number.isFinite(near.minRatio)) return "nodata";
+  if (near.minRatio < NEAR_VERDICT.red) return "red";
+  if (near.minRatio < NEAR_VERDICT.amber) return "amber";
+  return "green";
+}
+
+/** Worse of two verdicts (red > amber > green > nodata). */
+export function worseVerdict(a, b) {
+  const rank = { red: 3, amber: 2, green: 1, nodata: 0 };
+  return rank[a] >= rank[b] ? a : b;
 }

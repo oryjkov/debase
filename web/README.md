@@ -32,8 +32,20 @@ Any static host works for deployment (GitHub Pages etc.).
   that drives the surface, verdicts, and chart (best-estimate shown dotted
   alongside). Safety is a visible knob, never baked into the fit.
 - The translucent surface is the planning trajectory revolved through
-  360°; sector colors are verdicts per 5° heading: green ≥ 100 m min
-  clearance, amber 30–100 m, red < 30 m or strike.
+  360°; sector colors are verdicts per 5° heading, the worse of two checks:
+  - **Near field (first 150 m):** vertical clearance is ill-conditioned
+    against near-vertical terrain (±0.5 m of DEM registration swings it by
+    tens of metres), so close to the exit the check is *perpendicular air*
+    between the flight path and a 0.5 m upper-envelope terrain, sampled
+    over a distance-growing lateral swath (terrain dilated by position
+    uncertainty). Required air grows with altitude lost (1 + 0.08·drop,
+    capped 12 m) — clearance must *diverge*, absolute thresholds would
+    condemn every big-wall launch. Red under ×1 of needed, amber under ×2.
+  - **Far field:** vertical clearance under the planning trajectory on the
+    2 m grid (validated to agree with 0.5 m beyond the lip zone): red
+    < 30 m, amber < 100 m.
+  The heading readout also shows the measured (model-free) rock drop at
+  5/10/20 m out from the 0.5 m envelope.
 - Click the dial (or a surface sector) to open the altitude-vs-distance
   profile for that heading, with min-clearance and landing/strike markers.
 - The URL hash encodes exit + parameters + selected heading — shareable.
