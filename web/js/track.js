@@ -10,7 +10,11 @@
 import { simulate } from "./model.js";
 
 /**
- * Parse FlySight 1 CSV text.
+ * Parse a FlySight track CSV — both device generations:
+ *  - FlySight 1: plain CSV, `time,lat,lon,hMSL,velN,velE,velD,...` header
+ *    plus a units row;
+ *  - FlySight 2 (TRACK.CSV): `$FLYS`-framed, columns declared by a
+ *    `$COL,GNSS,...` line, data rows prefixed `$GNSS,`.
  * Returns samples [{t, lat, lon, h, vn, ve, vd}] with t in seconds from
  * first sample; `samples.epoch` holds the first sample's Unix time (s), so
  * epoch + t recovers the absolute moment of any sample (sun position etc.).
@@ -18,8 +22,27 @@ import { simulate } from "./model.js";
  */
 export function parseFlySight(text) {
   const lines = text.split(/\r?\n/);
-  const header = (lines[0] ?? "").split(",").map((s) => s.trim());
-  const col = (name) => header.indexOf(name);
+  const isV2 = (lines[0] ?? "").startsWith("$FLYS");
+
+  // Column layout: names -> field indices within a data row.
+  let names;
+  let rowStart; // fields consumed before the named columns begin
+  let isData;
+  if (isV2) {
+    const colLine = lines.find((l) => l.startsWith("$COL,GNSS,"));
+    if (!colLine) throw new Error("FlySight 2 file has no $COL,GNSS header (is this TRACK.CSV?)");
+    names = colLine.split(",").slice(2).map((s) => s.trim());
+    rowStart = 1; // fields[0] is the "$GNSS" tag
+    isData = (f) => f[0] === "$GNSS";
+  } else {
+    names = (lines[0] ?? "").split(",").map((s) => s.trim());
+    rowStart = 0;
+    isData = () => true;
+  }
+  const col = (name) => {
+    const i = names.indexOf(name);
+    return i < 0 ? -1 : i + rowStart;
+  };
   const iT = col("time");
   const iLat = col("lat");
   const iLon = col("lon");
@@ -28,15 +51,16 @@ export function parseFlySight(text) {
   const iVe = col("velE");
   const iVd = col("velD");
   if ([iT, iLat, iLon, iH, iVn, iVe, iVd].some((i) => i < 0)) {
-    throw new Error("not a FlySight CSV (expected time/lat/lon/hMSL/velN/velE/velD header)");
+    throw new Error("not a FlySight track (expected time/lat/lon/hMSL/velN/velE/velD columns)");
   }
+
   const samples = [];
   let t0 = null;
   for (let li = 1; li < lines.length; li++) {
     const f = lines[li].split(",");
-    if (f.length <= iVd) continue;
+    if (f.length <= iVd || !isData(f)) continue;
     const ms = Date.parse(f[iT]);
-    if (!Number.isFinite(ms)) continue; // units row, blanks
+    if (!Number.isFinite(ms)) continue; // units row, $VAR/$DATA framing, blanks
     const s = {
       t: ms / 1000,
       lat: +f[iLat],

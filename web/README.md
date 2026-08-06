@@ -37,7 +37,9 @@ Any static host works for deployment (GitHub Pages etc.).
 - Click the dial (or a surface sector) to open the altitude-vs-distance
   profile for that heading, with min-clearance and landing/strike markers.
 - The URL hash encodes exit + parameters + selected heading — shareable.
-- **Track calibration:** load (or drag-drop) a FlySight CSV. Exit and
+- **Track calibration:** load (or drag-drop) a FlySight CSV — original
+  format or FlySight 2 `TRACK.CSV` (the `$COL,GNSS`-framed one; the other
+  session files, SENSOR/EVENT/RAW, aren't needed). Exit and
   deployment are auto-detected from the Doppler velocities (draggable
   markers to adjust), and the ODE model is fitted to the velocity time
   series with a robust Huber loss — pilot-input segments (a mid-flight

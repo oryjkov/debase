@@ -395,7 +395,7 @@ function clearTrack() {
   $("legend-track").hidden = true;
   $("track-readout").className = "readout empty";
   $("track-readout").textContent =
-    "Load (or drop anywhere) a FlySight CSV — exit and deployment are detected automatically; drag the markers to adjust.";
+    "Load (or drop anywhere) a FlySight CSV — original or FlySight 2 TRACK.CSV. Exit and deployment are detected automatically; drag the markers to adjust.";
   updateGhost();
   if (selectedAz !== null && exit) selectHeading(selectedAz, true);
 }
