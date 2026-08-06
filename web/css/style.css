@@ -1,0 +1,272 @@
+/* alti3d exit check — instrument panel over a full-bleed globe.
+   Palette: ink-blue glass #10161E, paper ink #F2F4F1, Swiss red #DA291C,
+   status good/warning/critical from the validated dataviz set. */
+
+:root {
+  --glass: rgba(16, 22, 30, 0.86);
+  --glass-solid: #10161e;
+  --hairline: rgba(242, 244, 241, 0.14);
+  --ink: #f2f4f1;
+  --ink-2: rgba(242, 244, 241, 0.66);
+  --ink-3: rgba(242, 244, 241, 0.4);
+  --red: #da291c;
+  --good: #0ca30c;
+  --warn: #fab219;
+  --crit: #d03b3b;
+  --mono: "IBM Plex Mono", ui-monospace, monospace;
+  --ui: "Archivo", system-ui, sans-serif;
+}
+
+* { box-sizing: border-box; margin: 0; }
+
+html, body { height: 100%; overflow: hidden; }
+body { font-family: var(--ui); color: var(--ink); background: #000; }
+
+#cesium { position: absolute; inset: 0; }
+#cesium .cesium-viewer-bottom { right: 4px; left: auto; }
+
+/* ---------- left panel ---------- */
+#panel {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  bottom: 12px;
+  width: 300px;
+  display: flex;
+  flex-direction: column;
+  background: var(--glass);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  overflow: hidden auto;
+  z-index: 5;
+}
+
+#panel header {
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid var(--hairline);
+}
+#panel h1 {
+  font-size: 15px;
+  font-weight: 700;
+  font-stretch: 118%;
+  letter-spacing: 0.24em;
+}
+#panel .sub {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink-3);
+}
+
+#panel section { padding: 12px 16px; border-bottom: 1px solid var(--hairline); }
+#panel h2 {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  margin-bottom: 10px;
+}
+
+.row { display: flex; align-items: center; gap: 10px; }
+
+button.primary {
+  font: 600 12.5px var(--ui);
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  padding: 7px 12px;
+  cursor: pointer;
+}
+button.primary:hover { border-color: var(--ink-2); }
+button.primary.armed {
+  background: var(--red);
+  border-color: var(--red);
+  color: #fff;
+}
+
+.check {
+  font-size: 11.5px;
+  color: var(--ink-2);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+}
+.check input { accent-color: var(--red); }
+
+.readout {
+  margin-top: 10px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--ink);
+  white-space: pre-line;
+}
+.readout.empty { color: var(--ink-3); font-family: var(--ui); font-size: 11.5px; }
+.readout b { font-weight: 500; color: var(--warn); }
+kbd {
+  font-family: var(--mono);
+  font-size: 10px;
+  border: 1px solid var(--hairline);
+  border-radius: 3px;
+  padding: 0 4px;
+}
+
+/* sliders */
+.slider-row {
+  display: grid;
+  grid-template-columns: 44px 1fr 64px;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+}
+.slider-row label { font-size: 11.5px; color: var(--ink-2); }
+.slider-row output {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  text-align: right;
+}
+input[type="range"] {
+  appearance: none;
+  height: 3px;
+  background: var(--hairline);
+  border-radius: 2px;
+  cursor: pointer;
+}
+input[type="range"]::-webkit-slider-thumb {
+  appearance: none;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--ink);
+  border: 2px solid var(--glass-solid);
+}
+input[type="range"]:active::-webkit-slider-thumb,
+input[type="range"]:focus-visible::-webkit-slider-thumb { background: var(--red); }
+input[type="range"]::-moz-range-thumb {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--ink);
+  border: 2px solid var(--glass-solid);
+}
+
+#analysis-section { display: flex; flex-direction: column; align-items: center; }
+#analysis-section h2 { align-self: flex-start; }
+#dial { width: 190px; height: 190px; cursor: crosshair; touch-action: none; }
+#heading-stats { align-self: stretch; min-height: 64px; }
+
+.legend {
+  display: flex;
+  gap: 12px;
+  margin-top: 10px;
+  font-size: 10.5px;
+  color: var(--ink-2);
+}
+.legend i {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  margin-right: 4px;
+}
+
+#panel footer {
+  margin-top: auto;
+  padding: 10px 16px;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-3);
+}
+#status.busy { color: var(--warn); }
+#status.error { color: var(--crit); }
+
+/* ---------- layer toggle ---------- */
+#toolbar {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: flex;
+  background: var(--glass);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  overflow: hidden;
+  z-index: 5;
+}
+.tab {
+  font: 600 12px var(--ui);
+  color: var(--ink-2);
+  background: transparent;
+  border: none;
+  padding: 8px 14px;
+  cursor: pointer;
+}
+.tab.active { color: #fff; background: var(--red); }
+
+/* ---------- profile panel ---------- */
+#profile-panel[hidden] { display: none; }
+#profile-panel {
+  position: absolute;
+  left: 324px;
+  right: 12px;
+  bottom: 12px;
+  height: 240px;
+  background: var(--glass);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  z-index: 5;
+}
+.profile-head {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 14px 0;
+}
+#profile-title {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--ink);
+}
+.profile-head .legend { margin: 0; margin-left: auto; }
+#btn-close-profile {
+  background: none;
+  border: none;
+  color: var(--ink-2);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 0 2px;
+}
+.profile-body { position: relative; flex: 1; }
+#profile { position: absolute; inset: 0; width: 100%; height: 100%; }
+#profile-tooltip {
+  position: absolute;
+  display: none;
+  pointer-events: none;
+  background: var(--glass-solid);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  padding: 6px 9px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.6;
+  color: var(--ink-2);
+}
+#profile-tooltip b { color: var(--ink); font-weight: 500; }
+
+@media (max-width: 900px) {
+  #panel { width: 250px; }
+  #profile-panel { left: 274px; height: 200px; }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  #profile-panel, #panel { transition: opacity 0.2s ease; }
+}
