@@ -52,6 +52,13 @@ Any static host works for deployment (GitHub Pages etc.).
 - Click the dial (or a surface sector) to open the altitude-vs-distance
   profile for that heading, with min-clearance and landing/strike markers.
 - The URL hash encodes exit + parameters + selected heading — shareable.
+- **Terrain** (toolbar) overlays 50 m contour lines and a steel-blue tint
+  on slopes steeper than ~50°, on top of either base layer. Draped imagery
+  smears into vertical stripes on cliff faces; these are computed in the
+  globe shader from geometry, so walls actually read. (Two Cesium gotchas
+  cost this feature a debugging session: custom fabric `source` GLSL and
+  any use of `materialInput.slope` silently renders nothing unless the
+  terrain provider was created with `requestVertexNormals: true`.)
 - **Track calibration:** load (or drag-drop) a FlySight CSV — original
   format or FlySight 2 `TRACK.CSV` (the `$COL,GNSS`-framed one; the other
   session files, SENSOR/EVENT/RAW, aren't needed). Exit and

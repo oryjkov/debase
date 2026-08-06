@@ -75,7 +75,12 @@ const planningProfile = (p) =>
 /* ---------------- init ---------------- */
 async function init() {
   status("loading terrain…", "busy");
-  const terrainProvider = await Cesium.CesiumTerrainProvider.fromUrl(TERRAIN_URL);
+  // Vertex normals power the slope term of the Terrain material (and
+  // better lighting); swisstopo's tileset serves the octvertexnormals
+  // extension but it must be requested explicitly.
+  const terrainProvider = await Cesium.CesiumTerrainProvider.fromUrl(TERRAIN_URL, {
+    requestVertexNormals: true,
+  });
   viewer = new Cesium.Viewer("cesium", {
     terrainProvider,
     baseLayer: new Cesium.ImageryLayer(WMTS("ch.swisstopo.swissimage", "jpeg", 20)),
@@ -656,6 +661,58 @@ document.addEventListener("click", (ev) => {
 
 $("btn-sat").addEventListener("click", () => setLayer("sat"));
 $("btn-map").addEventListener("click", () => setLayer("map"));
+
+/**
+ * Terrain view: 50 m contour lines + steep-slope tint rendered by the
+ * globe material shader — geometry-true, unlike draped imagery, which
+ * smears into vertical stripes on cliff faces. Combines with either base
+ * layer and costs nothing (no extra data).
+ */
+let terrainMaterial = null;
+function makeTerrainMaterial() {
+  // Single custom-source globe material: 50 m contour lines + steep-slope
+  // tint. NOTE Cesium does not auto-inject fabric uniforms into a custom
+  // `source` — the GLSL must declare them itself (omitting them fails
+  // silently). materialInput.slope is radians: 0.87 ≈ 50°, 1.35 ≈ 77°.
+  const source = `
+uniform vec4 lineColor;
+uniform vec4 steepColor;
+uniform float spacing;
+uniform float width;
+czm_material czm_getMaterial(czm_materialInput materialInput)
+{
+  czm_material material = czm_getDefaultMaterial(materialInput);
+  float distanceToContour = mod(materialInput.height, spacing);
+  float dxc = abs(dFdx(materialInput.height));
+  float dyc = abs(dFdy(materialInput.height));
+  float dF = max(dxc, dyc) * czm_pixelRatio * width;
+  float lineA = ((distanceToContour < dF) ? 1.0 : 0.0) * lineColor.a;
+  float steepA = steepColor.a * smoothstep(0.87, 1.35, materialInput.slope);
+  material.diffuse = lineA >= steepA ? lineColor.rgb : steepColor.rgb;
+  material.alpha = max(lineA, steepA);
+  return material;
+}`;
+  return new Cesium.Material({
+    fabric: {
+      type: "ExitCheckTerrain",
+      uniforms: {
+        lineColor: Cesium.Color.fromCssColorString("#10161e").withAlpha(0.6),
+        steepColor: new Cesium.Color(0.37, 0.55, 0.75, 0.5),
+        spacing: 50,
+        width: 1.5,
+      },
+      source,
+    },
+  });
+}
+
+$("btn-terrain").addEventListener("click", () => {
+  const on = !$("btn-terrain").classList.contains("active");
+  $("btn-terrain").classList.toggle("active", on);
+  if (on && !terrainMaterial) terrainMaterial = makeTerrainMaterial();
+  viewer.scene.globe.material = on ? terrainMaterial : undefined;
+  viewer.scene.requestRender();
+});
 function setLayer(which) {
   $("btn-sat").classList.toggle("active", which === "sat");
   $("btn-map").classList.toggle("active", which === "map");
