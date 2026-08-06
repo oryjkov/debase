@@ -200,9 +200,13 @@ export class Dem {
    * Scores each candidate in a small disc by its largest immediate drop
    * (probe metres out, any direction) minus a mild distance penalty, so the
    * pick moves to the lip but not to some other feature further away.
+   * When `targetAlt` is given (e.g. the GPS altitude of a recorded exit),
+   * candidates whose ground elevation disagrees with it are penalized —
+   * this rescues points whose horizontal GPS error puts them onto the face
+   * below the real exit.
    * Call after prepare()/settle(). Returns {e, n, moved}.
    */
-  snapToLip(e, n, { radius = 14, step = 1.5, probe = 7 } = {}) {
+  snapToLip(e, n, { radius = 14, step = 1.5, probe = 7, targetAlt = null } = {}) {
     let best = { e, n, score: -Infinity };
     for (let de = -radius; de <= radius; de += step) {
       for (let dn = -radius; dn <= radius; dn += step) {
@@ -218,7 +222,8 @@ export class Dem {
           const zp = this.sample2(ce + Math.sin(az) * probe, cn + Math.cos(az) * probe);
           if (Number.isFinite(zp)) drop = Math.max(drop, z - zp);
         }
-        const score = drop - r * 0.5;
+        let score = drop - r * 0.5;
+        if (targetAlt !== null) score -= Math.abs(z - targetAlt) * 0.6;
         if (score > best.score) best = { e: ce, n: cn, score };
       }
     }

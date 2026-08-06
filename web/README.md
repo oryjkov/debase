@@ -27,6 +27,23 @@ Any static host works for deployment (GitHub Pages etc.).
 - Click the dial (or a surface sector) to open the altitude-vs-distance
   profile for that heading, with min-clearance and landing/strike markers.
 - The URL hash encodes exit + parameters + selected heading — shareable.
+- **Track calibration:** load (or drag-drop) a FlySight CSV. Exit and
+  deployment are auto-detected from the Doppler velocities (draggable
+  markers to adjust), the flight is extracted as drop-vs-along-track
+  distance, and the two-phase model is fitted to it with an asymmetric
+  loss (a model optimistic about clearance is penalized 25×, so the fit
+  hugs the real flight from below). "Apply fitted model" pushes the fitted
+  push/dive/glide into the sliders; the measured curve shows dashed in the
+  profile chart, and a dashed "ghost" of the actual 3D path renders over
+  terrain. The **aim** slider sets the ghost's initial flight direction
+  (0–359°); it snaps to the heading you pick on the dial, then adjusts
+  freely — turns in the track stay rigid, only the whole path rotates.
+  "Go to exit" flies to the track's recorded exit, places the evaluation
+  exit there and aims the ghost as flown; the snap uses the GPS altitude
+  as a hint, because horizontal GPS error routinely drops the reported
+  point over the edge onto the face below the real exit. It also sets the
+  scene clock to the recorded exit moment and enables globe lighting, so
+  sun/moon position and terrain shading match the actual jump conditions.
 
 ## Design rules
 
@@ -48,4 +65,6 @@ Any static host works for deployment (GitHub Pages etc.).
 - `js/lv95.js` — swisstopo approximate WGS84↔LV95 formulas (~1 m)
 - `js/surface.js` — the revolved capture surface (one instance per sector)
 - `js/dial.js`, `js/profile.js` — heading dial and profile chart
+- `js/track.js` — FlySight parse, jump segmentation, extraction, model fit
+- `js/timeline.js` — track timeline with draggable exit/deploy markers
 - `js/main.js` — Cesium viewer, UI wiring, hash state

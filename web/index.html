@@ -55,6 +55,29 @@
       </div>
     </section>
 
+    <section id="track-section">
+      <h2>Track calibration</h2>
+      <div class="row">
+        <button id="btn-track" class="primary">Load FlySight CSV</button>
+        <input type="file" id="file-track" accept=".csv,.CSV,text/csv" hidden>
+        <label class="check"><input type="checkbox" id="chk-ghost" checked>ghost</label>
+      </div>
+      <canvas id="timeline" hidden></canvas>
+      <div id="track-readout" class="readout empty">Load (or drop anywhere) a FlySight CSV — exit and deployment are detected automatically; drag the markers to adjust.</div>
+      <div id="ghost-controls" hidden>
+        <div class="slider-row">
+          <label for="sl-aim">aim</label>
+          <input type="range" id="sl-aim" min="0" max="359" step="1" value="0">
+          <output id="out-aim">000°</output>
+        </div>
+      </div>
+      <div class="row" id="track-actions" hidden>
+        <button id="btn-apply-fit" class="primary">Apply fitted model</button>
+        <button id="btn-goto-exit" class="primary">Go to exit</button>
+        <button id="btn-clear-track" class="primary">Clear</button>
+      </div>
+    </section>
+
     <section id="analysis-section">
       <h2>Headings</h2>
       <canvas id="dial" width="220" height="220"></canvas>
@@ -81,7 +104,8 @@
     <div class="profile-head">
       <span id="profile-title">profile</span>
       <span class="legend">
-        <span><i style="background:#9EC9F0"></i>flight path</span>
+        <span><i style="background:#7FBDF5"></i>flight path</span>
+        <span id="legend-track" hidden><i style="background:#C77FE8"></i>track (measured)</span>
         <span><i style="background:#8ba3b8"></i>terrain</span>
       </span>
       <button id="btn-close-profile" title="close">×</button>

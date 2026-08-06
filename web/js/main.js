@@ -4,6 +4,8 @@ import { Dem } from "./dem.js";
 import { TrajectorySurface } from "./surface.js";
 import { HeadingDial } from "./dial.js";
 import { ProfileChart } from "./profile.js";
+import { parseFlySight, segmentJump, extractFlight, fitModel } from "./track.js";
+import { TrackTimeline } from "./timeline.js";
 
 const TERRAIN_URL = "https://3d.geo.admin.ch/ch.swisstopo.terrain.3d/v1/";
 const WMTS = (layer, fmt, maxLevel) =>
@@ -41,6 +43,10 @@ let selectedAz = null; // degrees
 let armed = false;
 let rayEntity = null;
 let exitEntity = null;
+let ghostEntity = null;
+let track = null; // {samples, iExit, iDeploy, flight, fit}
+let timeline = null;
+let ghostHeading = null; // absolute heading (deg) of the ghost's initial flight direction
 
 const params = () => ({
   v0: parseFloat($("sl-v0").value),
@@ -73,10 +79,17 @@ async function init() {
     msaaSamples: 4,
   });
   viewer.scene.globe.depthTestAgainstTerrain = true;
+  window.viewer = viewer; // console/debug access
   surface = new TrajectorySurface(viewer);
   dial = new HeadingDial($("dial"), (az) => selectHeading(az));
   chart = new ProfileChart($("profile"), $("profile-tooltip"));
   dial.update({});
+  timeline = new TrackTimeline($("timeline"), (iExit, iDeploy) => {
+    if (!track) return;
+    track.iExit = iExit;
+    track.iDeploy = iDeploy;
+    recomputeTrack();
+  });
 
   viewer.camera.setView({
     destination: Cesium.Cartesian3.fromDegrees(7.98, 46.72, 7500),
@@ -130,7 +143,7 @@ function pickExit(windowPos) {
   );
 }
 
-async function setExitAt(lon, lat, fromHash = false, exactLv95 = null) {
+async function setExitAt(lon, lat, fromHash = false, exactLv95 = null, snapOpts = null) {
   try {
     const p = params();
     // exactLv95 avoids WGS84 round-trip drift when restoring a shared hash —
@@ -145,7 +158,7 @@ async function setExitAt(lon, lat, fromHash = false, exactLv95 = null) {
 
     let moved = 0;
     if ($("chk-snap").checked && !fromHash) {
-      const s = dem.snapToLip(e, n);
+      const s = dem.snapToLip(e, n, snapOpts ?? {});
       e = s.e;
       n = s.n;
       moved = s.moved;
@@ -294,8 +307,183 @@ function selectHeading(azDeg, keep = false) {
 
   $("profile-panel").hidden = false;
   $("profile-title").textContent = `heading ${String(Math.round(selectedAz)).padStart(3, "0")}° · exit ${Math.round(exit.alt)} m`;
-  chart.update(samples, prof, exit.alt, r, selectedAz);
+  chart.update(samples, prof, exit.alt, r, selectedAz, trackCurve());
+  // Snap the ghost aim to an explicit dial/surface selection, but leave a
+  // manually adjusted aim alone during recomputes (keep=true).
+  if (!keep && track) setGhostHeading(selectedAz);
+  else updateGhost();
   if (!keep) writeHash();
+}
+
+/* ---------------- FlySight track ---------------- */
+const trackCurve = () =>
+  track?.flight ? { d: track.flight.d, drop: track.flight.drop } : null;
+
+function loadTrackText(text, name) {
+  try {
+    const samples = parseFlySight(text);
+    const seg = segmentJump(samples);
+    if (seg.iExit === null) {
+      status("no jump found in track (no sustained descent)", "error");
+      return;
+    }
+    const iDeploy = seg.iDeploy ?? Math.min(samples.length - 1, seg.iLand ?? samples.length - 1);
+    track = { samples, iExit: seg.iExit, iDeploy, name };
+    $("timeline").hidden = false;
+    $("track-actions").hidden = false;
+    $("ghost-controls").hidden = false;
+    recomputeTrack();
+    setGhostHeading(selectedAz ?? track.flight.heading0 ?? 0);
+  } catch (err) {
+    status(`track: ${err.message}`, "error");
+  }
+}
+
+function recomputeTrack() {
+  const { samples, iExit, iDeploy } = track;
+  track.flight = extractFlight(samples, iExit, iDeploy);
+  track.fit = fitModel(track.flight.d, track.flight.drop);
+  timeline.setData(samples, iExit, iDeploy);
+
+  const f = track.flight;
+  const fit = track.fit;
+  const drift = Math.max(f.checks.horizDriftM, f.checks.dropDriftM);
+  $("track-readout").className = "readout";
+  $("track-readout").textContent =
+    `${f.checks.durationS.toFixed(0)} s flight · ${Math.round(f.d[f.d.length - 1])} m out · ` +
+    `${Math.round(f.drop[f.drop.length - 1])} m down\n` +
+    `fit: push ${fit.v0.toFixed(1)} m/s · dive ${Math.round(fit.hTrans)} m · glide ${fit.glide.toFixed(2)}\n` +
+    (drift > 20 ? `⚠ GPS/velocity drift ${Math.round(drift)} m — treat with care` : "");
+
+  $("legend-track").hidden = false;
+  if (selectedAz !== null && exit) selectHeading(selectedAz, true);
+  else updateGhost();
+}
+
+function applyFit() {
+  if (!track?.fit) return;
+  const clamp = (id, v) => {
+    const el = $(id);
+    el.value = Math.max(+el.min, Math.min(+el.max, v));
+  };
+  clamp("sl-v0", Math.round(track.fit.v0 * 10) / 10);
+  clamp("sl-ht", Math.round(track.fit.hTrans / 5) * 5);
+  clamp("sl-gl", Math.round(track.fit.glide * 20) / 20);
+  syncOutputs();
+  scheduleUpdate();
+}
+
+function clearTrack() {
+  track = null;
+  ghostHeading = null;
+  $("timeline").hidden = true;
+  $("track-actions").hidden = true;
+  $("ghost-controls").hidden = true;
+  $("legend-track").hidden = true;
+  $("track-readout").className = "readout empty";
+  $("track-readout").textContent =
+    "Load (or drop anywhere) a FlySight CSV — exit and deployment are detected automatically; drag the markers to adjust.";
+  updateGhost();
+  if (selectedAz !== null && exit) selectHeading(selectedAz, true);
+}
+
+/**
+ * Fly to the track's actual (GPS-detected) exit, place the evaluation exit
+ * there — snap-to-lip applies if enabled, tidying GPS position error — and
+ * aim the ghost as flown, so the real jump is reproduced in place.
+ */
+async function gotoTrackExit() {
+  if (!track) return;
+  const s = track.samples[track.iExit];
+  const h0 = track.flight.heading0 ?? 0;
+  // GPS horizontal error routinely puts the reported point over the edge
+  // onto the face below; a wider, altitude-aware snap recovers the lip.
+  await setExitAt(s.lon, s.lat, false, null, { radius: 35, targetAlt: s.h });
+  if (!exit) return;
+
+  // Camera: behind the exit, opposite the flight direction, looking along
+  // it — clamped above the rendered terrain (the backdrop is often a wall).
+  const carto = Cesium.Cartographic.fromCartesian(exit.anchor);
+  const lat = Cesium.Math.toDegrees(carto.latitude);
+  const lon = Cesium.Math.toDegrees(carto.longitude);
+  const back = 1100;
+  const rad = (h0 * Math.PI) / 180;
+  const camLat = lat - (Math.cos(rad) * back) / 111320;
+  const camLon = lon - (Math.sin(rad) * back) / (111320 * Math.cos((lat * Math.PI) / 180));
+  const ground = [Cesium.Cartographic.fromDegrees(camLon, camLat)];
+  await Cesium.sampleTerrainMostDetailed(viewer.terrainProvider, ground);
+  const camH = Math.max(carto.height + 500, (ground[0].height ?? 0) + 150);
+  viewer.camera.flyTo({
+    destination: Cesium.Cartesian3.fromDegrees(camLon, camLat, camH),
+    orientation: {
+      heading: Cesium.Math.toRadians(h0),
+      pitch: Cesium.Math.toRadians(-25),
+    },
+    duration: 1.8,
+  });
+
+  // Light the scene as it was at the moment of exit (sun/moon position).
+  if (Number.isFinite(track.samples.epoch)) {
+    viewer.clock.currentTime = Cesium.JulianDate.fromDate(
+      new Date((track.samples.epoch + s.t) * 1000)
+    );
+    viewer.scene.globe.enableLighting = true;
+    viewer.scene.requestRender();
+  }
+  setGhostHeading(h0);
+}
+
+/** Set the ghost's aim (deg) and sync the slider without re-firing it. */
+function setGhostHeading(deg) {
+  ghostHeading = ((Math.round(deg) % 360) + 360) % 360;
+  $("sl-aim").value = ghostHeading;
+  $("out-aim").textContent = `${String(ghostHeading).padStart(3, "0")}°`;
+  updateGhost();
+}
+
+/**
+ * Ghost: the measured 3D path translated to the chosen exit and rotated so
+ * its initial flight direction points at `ghostHeading` (the aim slider;
+ * it snaps to the dial selection, then adjusts freely).
+ */
+function updateGhost() {
+  if (ghostEntity) {
+    viewer.entities.remove(ghostEntity);
+    ghostEntity = null;
+  }
+  const on = $("chk-ghost").checked;
+  if (!on || !track?.flight || !exit || ghostHeading === null) {
+    viewer.scene.requestRender();
+    return;
+  }
+  const f = track.flight;
+  const theta = ((ghostHeading - (f.heading0 ?? 0)) * Math.PI) / 180;
+  const cos = Math.cos(theta);
+  const sin = Math.sin(theta);
+  const enu = Cesium.Transforms.eastNorthUpToFixedFrame(exit.anchor);
+  const pts = [];
+  const step = Math.max(1, Math.floor(f.path.length / 400));
+  for (let i = 0; i < f.path.length; i += step) {
+    const p = f.path[i];
+    pts.push(
+      Cesium.Matrix4.multiplyByPoint(
+        enu,
+        new Cesium.Cartesian3(p.e * cos + p.n * sin, -p.e * sin + p.n * cos, p.z),
+        new Cesium.Cartesian3()
+      )
+    );
+  }
+  ghostEntity = viewer.entities.add({
+    polyline: {
+      positions: pts,
+      width: 2.5,
+      material: new Cesium.PolylineDashMaterialProperty({
+        color: Cesium.Color.fromCssColorString("#C77FE8"),
+        dashLength: 12,
+      }),
+    },
+  });
+  viewer.scene.requestRender();
 }
 
 /* ---------------- share state via hash ---------------- */
@@ -373,6 +561,32 @@ function setLayer(which) {
   viewer.scene.requestRender();
 }
 
+$("btn-track").addEventListener("click", () => $("file-track").click());
+$("file-track").addEventListener("change", async (ev) => {
+  const file = ev.target.files?.[0];
+  if (file) loadTrackText(await file.text(), file.name);
+  ev.target.value = "";
+});
+$("btn-apply-fit").addEventListener("click", applyFit);
+$("btn-goto-exit").addEventListener("click", gotoTrackExit);
+$("btn-clear-track").addEventListener("click", clearTrack);
+$("chk-ghost").addEventListener("change", updateGhost);
+$("sl-aim").addEventListener("input", () => setGhostHeading(parseFloat($("sl-aim").value)));
+
+window.addEventListener("dragover", (ev) => {
+  ev.preventDefault();
+  document.body.classList.add("dragging");
+});
+window.addEventListener("dragleave", (ev) => {
+  if (!ev.relatedTarget) document.body.classList.remove("dragging");
+});
+window.addEventListener("drop", async (ev) => {
+  ev.preventDefault();
+  document.body.classList.remove("dragging");
+  const file = ev.dataTransfer?.files?.[0];
+  if (file) loadTrackText(await file.text(), file.name);
+});
+
 $("btn-close-profile").addEventListener("click", () => {
   $("profile-panel").hidden = true;
   selectedAz = null;
@@ -382,6 +596,7 @@ $("btn-close-profile").addEventListener("click", () => {
     rayEntity = null;
     viewer.scene.requestRender();
   }
+  updateGhost();
   writeHash();
 });
 

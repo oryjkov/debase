@@ -12,7 +12,8 @@ const INK = {
   grid: "rgba(242,244,241,0.10)",
   terrainFill: "rgba(58,74,88,0.85)",
   terrainEdge: "rgba(139,163,184,0.9)",
-  flight: "#9EC9F0",
+  flight: "#7FBDF5",
+  track: "#C77FE8",
 };
 const STATUS = { good: "#0ca30c", warning: "#fab219", critical: "#d03b3b" };
 
@@ -40,9 +41,10 @@ export class ProfileChart {
    * @param exitAlt  absolute exit altitude (m, LN02)
    * @param analysis analyzeAzimuth() result
    * @param azimuth  degrees, for the title row
+   * @param track    optional measured curve {d: [], drop: []} (FlySight)
    */
-  update(samples, profile, exitAlt, analysis, azimuth) {
-    this.state = { samples, profile, exitAlt, analysis, azimuth };
+  update(samples, profile, exitAlt, analysis, azimuth, track = null) {
+    this.state = { samples, profile, exitAlt, analysis, azimuth, track };
     this.draw();
   }
 
@@ -142,6 +144,35 @@ export class ProfileChart {
     ctx.strokeStyle = INK.flight;
     ctx.lineWidth = 2;
     ctx.stroke();
+
+    // measured track curve (dashed, direct-labeled)
+    const track = this.state.track;
+    if (track && track.d.length > 1) {
+      ctx.beginPath();
+      let on = false;
+      for (let i = 0; i < track.d.length; i++) {
+        if (track.d[i] > L.maxD) break;
+        const px = L.x(track.d[i]);
+        const py = L.y(exitAlt - track.drop[i]);
+        if (!on) {
+          ctx.moveTo(px, py);
+          on = true;
+        } else ctx.lineTo(px, py);
+      }
+      ctx.strokeStyle = INK.track;
+      ctx.lineWidth = 1.6;
+      ctx.setLineDash([5, 4]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      const iLab = Math.min(track.d.length - 1, Math.floor(track.d.length * 0.75));
+      if (track.d[iLab] <= L.maxD) {
+        ctx.fillStyle = INK.track;
+        ctx.font = "11px 'Archivo', sans-serif";
+        ctx.textAlign = "left";
+        ctx.textBaseline = "top";
+        ctx.fillText("track", L.x(track.d[iLab]) + 5, L.y(exitAlt - track.drop[iLab]) + 4);
+      }
+    }
 
     // direct labels (identity never by color alone)
     ctx.font = ui;
