@@ -48,10 +48,12 @@ let track = null; // {samples, iExit, iDeploy, flight, fit}
 let timeline = null;
 let ghostHeading = null; // absolute heading (deg) of the ghost's initial flight direction
 
+// Sliders show km/h; the model and the URL hash work in m/s.
+const KPH = 3.6;
 const params = () => ({
-  v0: parseFloat($("sl-v0").value),
+  v0: parseFloat($("sl-v0").value) / KPH,
   glide: parseFloat($("sl-gl").value),
-  vInf: parseFloat($("sl-sp").value),
+  vInf: parseFloat($("sl-sp").value) / KPH,
   tRamp: parseFloat($("sl-ramp").value),
   hRange: parseFloat($("sl-hr").value),
   margin: parseFloat($("sl-margin").value), // % sustained-glide derate
@@ -363,8 +365,8 @@ function recomputeTrack() {
   $("track-readout").textContent =
     `${f.checks.durationS.toFixed(0)} s flight · ${Math.round(f.d[f.d.length - 1])} m out · ` +
     `${Math.round(f.drop[f.drop.length - 1])} m down\n` +
-    `fit: glide ${fit.glide.toFixed(2)} · speed ${Math.round(fit.vInf)} m/s · ` +
-    `ramp ${fit.tRamp.toFixed(1)} s · push ${fit.v0.toFixed(1)} m/s\n` +
+    `fit: glide ${fit.glide.toFixed(2)} · speed ${Math.round(fit.vInf * KPH)} km/h · ` +
+    `ramp ${fit.tRamp.toFixed(1)} s · push ${(fit.v0 * KPH).toFixed(1)} km/h\n` +
     (drift > 20 ? `⚠ GPS/velocity drift ${Math.round(drift)} m — treat with care` : "");
 
   $("legend-track").hidden = false;
@@ -378,9 +380,9 @@ function applyFit() {
     const el = $(id);
     el.value = Math.max(+el.min, Math.min(+el.max, v));
   };
-  clamp("sl-v0", Math.round(track.fit.v0 * 10) / 10);
+  clamp("sl-v0", Math.round(track.fit.v0 * KPH * 2) / 2);
   clamp("sl-gl", Math.round(track.fit.glide * 20) / 20);
-  clamp("sl-sp", Math.round(track.fit.vInf));
+  clamp("sl-sp", Math.round(track.fit.vInf * KPH));
   clamp("sl-ramp", Math.round(track.fit.tRamp * 2) / 2);
   syncOutputs();
   scheduleUpdate();
@@ -506,9 +508,9 @@ function writeHash() {
   const parts = [
     exit.e.toFixed(1),
     exit.n.toFixed(1),
-    p.v0,
+    +p.v0.toFixed(2), // hash keeps m/s (stable across display-unit changes)
     p.glide,
-    p.vInf,
+    +p.vInf.toFixed(2),
     p.tRamp,
     p.hRange,
     p.margin,
@@ -528,16 +530,16 @@ function restoreFromHash() {
   };
   let az;
   if (f.length >= 9) {
-    set("sl-v0", f[2]);
+    set("sl-v0", f[2] * KPH); // hash is m/s, sliders are km/h
     set("sl-gl", f[3]);
-    set("sl-sp", f[4]);
+    set("sl-sp", f[4] * KPH);
     set("sl-ramp", f[5]);
     set("sl-hr", f[6]);
     set("sl-margin", f[7]);
     az = f[8];
   } else {
     // legacy two-phase hash: e,n,v0,hTrans,glide,hRange,az — dive is gone
-    set("sl-v0", f[2]);
+    set("sl-v0", f[2] * KPH);
     set("sl-gl", f[4]);
     set("sl-hr", f[5]);
     az = f[6];
@@ -557,9 +559,9 @@ function restoreFromHash() {
 
 /* ---------------- UI wiring ---------------- */
 function syncOutputs() {
-  $("out-v0").textContent = `${parseFloat($("sl-v0").value).toFixed(1)} m/s`;
+  $("out-v0").textContent = `${parseFloat($("sl-v0").value).toFixed(1)} km/h`;
   $("out-gl").textContent = parseFloat($("sl-gl").value).toFixed(2);
-  $("out-sp").textContent = `${$("sl-sp").value} m/s`;
+  $("out-sp").textContent = `${$("sl-sp").value} km/h`;
   $("out-ramp").textContent = `${parseFloat($("sl-ramp").value).toFixed(1)} s`;
   $("out-hr").textContent = `${$("sl-hr").value} m`;
   $("out-margin").textContent = `−${$("sl-margin").value} %`;
@@ -585,7 +587,7 @@ window.addEventListener("keydown", (ev) => {
 
 /* ---------------- parameter help ---------------- */
 const HELP = {
-  v0: ["push", "Horizontal speed you leave the rock with. A standing push is ~2 m/s, a strong running exit 4–5. It only matters for the first few seconds — but those are the strike-critical ones."],
+  v0: ["push", "Horizontal speed you leave the rock with. A standing push is ~7 km/h, a strong running exit 15–18. It only matters for the first few seconds — but those are the strike-critical ones."],
   glide: ["glide", "Sustained glide ratio of established flight: metres forward per metre of drop, once the suit is flying steadily. This is the cone's far-field slope. Set it from your suit and your tracks, not from a good day's memory."],
   speed: ["speed", "Sustained total airspeed in established flight. Together with glide it fixes the model's lift and drag coefficients, which shape the whole dive-to-flight curve — not just the far field."],
   ramp: ["ramp", "Seconds for lift to build after exit (suit pressurization and dive-out). Slick ≈ 0, small suits 1–2 s, big suits several. A longer ramp means a deeper dive before the curve bends forward."],
