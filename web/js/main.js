@@ -577,7 +577,47 @@ window.addEventListener("keydown", (ev) => {
   if (ev.key === "e" || ev.key === "E") {
     if (document.activeElement?.tagName !== "INPUT") arm(!armed);
   }
-  if (ev.key === "Escape") arm(false);
+  if (ev.key === "Escape") {
+    arm(false);
+    helpPop.hidden = true;
+  }
+});
+
+/* ---------------- parameter help ---------------- */
+const HELP = {
+  v0: ["push", "Horizontal speed you leave the rock with. A standing push is ~2 m/s, a strong running exit 4–5. It only matters for the first few seconds — but those are the strike-critical ones."],
+  glide: ["glide", "Sustained glide ratio of established flight: metres forward per metre of drop, once the suit is flying steadily. This is the cone's far-field slope. Set it from your suit and your tracks, not from a good day's memory."],
+  speed: ["speed", "Sustained total airspeed in established flight. Together with glide it fixes the model's lift and drag coefficients, which shape the whole dive-to-flight curve — not just the far field."],
+  ramp: ["ramp", "Seconds for lift to build after exit (suit pressurization and dive-out). Slick ≈ 0, small suits 1–2 s, big suits several. A longer ramp means a deeper dive before the curve bends forward."],
+  range: ["range", "How far below the exit the surface and the analysis extend. Terrain deeper than this is not evaluated — headings shown clear may still have obstacles beyond the range."],
+  margin: ["margin", "Safety derate: the surface, the heading verdicts and the solid chart line use sustained glide reduced by this percentage. The dotted chart line is the undiluted best estimate. 0 % means planning on your best-day numbers."],
+  snap: ["snap to lip", "Clicks land on the rendered 3D mesh, which is metres coarser than the real data — usually a step back from the edge. Snapping moves the exit to the strongest nearby drop; for a track's exit it also matches the GPS altitude, since horizontal GPS error tends to put the point over the edge."],
+  ghost: ["ghost", "Shows the recorded flight path, translated to the current exit with its turns preserved. Dashed violet in 3D and in the profile chart."],
+  aim: ["aim", "Compass direction of the ghost's initial flight. It snaps to the heading you pick on the dial, then adjusts freely — the whole recorded path rotates rigidly around the exit."],
+};
+const helpPop = document.createElement("div");
+helpPop.id = "help-pop";
+helpPop.hidden = true;
+document.body.appendChild(helpPop);
+document.addEventListener("click", (ev) => {
+  const btn = ev.target.closest?.("button.help");
+  if (btn) {
+    ev.preventDefault(); // inside a <label>: don't activate the control
+    const key = btn.dataset.help;
+    if (!helpPop.hidden && helpPop.dataset.key === key) {
+      helpPop.hidden = true;
+      return;
+    }
+    const [title, text] = HELP[key] ?? [key, ""];
+    helpPop.innerHTML = `<b>${title}</b>${text}`;
+    helpPop.dataset.key = key;
+    helpPop.hidden = false;
+    const r = btn.getBoundingClientRect();
+    helpPop.style.left = `${Math.min(r.right + 10, window.innerWidth - helpPop.offsetWidth - 12)}px`;
+    helpPop.style.top = `${Math.min(r.top - 6, window.innerHeight - helpPop.offsetHeight - 12)}px`;
+  } else if (!ev.target.closest?.("#help-pop")) {
+    helpPop.hidden = true;
+  }
 });
 
 $("btn-sat").addEventListener("click", () => setLayer("sat"));

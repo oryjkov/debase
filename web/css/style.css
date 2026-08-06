@@ -96,6 +96,36 @@ button.primary.armed {
 }
 .check input { accent-color: var(--red); }
 
+button.help {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid var(--hairline);
+  background: none;
+  color: var(--ink-3);
+  font: 600 9px/1 var(--ui);
+  padding: 0;
+  margin-left: 6px;
+  cursor: pointer;
+  vertical-align: 1px;
+}
+button.help:hover,
+button.help:focus-visible { color: var(--ink); border-color: var(--ink-2); }
+
+#help-pop {
+  position: fixed;
+  z-index: 60;
+  max-width: 252px;
+  background: var(--glass-solid);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  padding: 9px 11px 10px;
+  font: 400 11.5px/1.55 var(--ui);
+  color: var(--ink-2);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.45);
+}
+#help-pop b { display: block; color: var(--ink); font-weight: 600; margin-bottom: 3px; }
+
 .readout {
   margin-top: 10px;
   font-family: var(--mono);
@@ -117,12 +147,14 @@ kbd {
 /* sliders */
 .slider-row {
   display: grid;
-  grid-template-columns: 44px 1fr 64px;
+  grid-template-columns: 62px 1fr 64px;
   align-items: center;
   gap: 8px;
   margin: 8px 0;
 }
-.slider-row label { font-size: 11.5px; color: var(--ink-2); }
+.slider-row label { font-size: 11.5px; color: var(--ink-2); white-space: nowrap; }
+.slider-row label .help,
+.slider-row label button.help { margin-left: 4px; }
 .slider-row output {
   font-family: var(--mono);
   font-size: 11.5px;
