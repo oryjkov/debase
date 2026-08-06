@@ -198,16 +198,24 @@ export class Dem {
    * Snap a clicked point to the nearby cliff lip. Cesium's rendered mesh is
    * LOD-simplified, so a click on the visual edge often lands a few metres
    * back on the plateau — where every azimuth reads as an immediate strike.
-   * Scores each candidate in a small disc by its largest immediate drop
-   * (probe metres out, any direction) minus a mild distance penalty, so the
-   * pick moves to the lip but not to some other feature further away.
+   * Scores each candidate in a small disc using the 0.5 m grid (when
+   * loaded; 2 m fallback). Three terms keep the pick ON the lip instead of
+   * down the face:
+   *  - immediate drop (probe metres out, any direction), CAPPED — once a
+   *    candidate has a real edge, more drop must not pull it further down
+   *    the face, where the drop to the base only keeps growing;
+   *  - a rise penalty: terrain climbing above the candidate nearby means
+   *    it is standing under the wall, not on top of it;
+   *  - a mild distance penalty toward the original point.
    * When `targetAlt` is given (e.g. the GPS altitude of a recorded exit),
    * candidates whose ground elevation disagrees with it are penalized —
    * this rescues points whose horizontal GPS error puts them onto the face
    * below the real exit.
-   * Call after prepare()/settle(). Returns {e, n, moved}.
+   * Call after prepare()/settle() (and ideally loadNearField()).
+   * Returns {e, n, moved}.
    */
-  snapToLip(e, n, { radius = 14, step = 1.5, probe = 7, targetAlt = null } = {}) {
+  snapToLip(e, n, { radius = 14, step = 0.75, probe = 3.5, targetAlt = null } = {}) {
+    const DROP_CAP = 60;
     let best = { e, n, score: -Infinity };
     for (let de = -radius; de <= radius; de += step) {
       for (let dn = -radius; dn <= radius; dn += step) {
@@ -215,15 +223,19 @@ export class Dem {
         if (r > radius) continue;
         const ce = e + de;
         const cn = n + dn;
-        const z = this.sample2(ce, cn);
+        const z = this.nearSample(ce, cn);
         if (!Number.isFinite(z)) continue;
         let drop = 0;
+        let rise = 0;
         for (let i = 0; i < 16; i++) {
           const az = (i * 2 * Math.PI) / 16;
-          const zp = this.sample2(ce + Math.sin(az) * probe, cn + Math.cos(az) * probe);
-          if (Number.isFinite(zp)) drop = Math.max(drop, z - zp);
+          const zp = this.nearSample(ce + Math.sin(az) * probe, cn + Math.cos(az) * probe);
+          if (!Number.isFinite(zp)) continue;
+          drop = Math.max(drop, z - zp);
+          rise = Math.max(rise, zp - z);
         }
-        let score = drop - r * 0.5;
+        let score =
+          Math.min(drop, DROP_CAP) - 2 * Math.max(0, rise - 2) - 0.7 * r;
         if (targetAlt !== null) score -= Math.abs(z - targetAlt) * 0.6;
         if (score > best.score) best = { e: ce, n: cn, score };
       }
@@ -284,6 +296,35 @@ export class Dem {
     );
     this.near = { data, size, west, north, res };
     return this.near;
+  }
+
+  /**
+   * Bilinear sample of the 0.5 m near-field grid; falls back to the 2 m
+   * mosaic when the fine grid isn't loaded or has no data here.
+   */
+  nearSample(E, N) {
+    const g = this.near;
+    if (g) {
+      const x = (E - g.west) / g.res - 0.5;
+      const y = (g.north - N) / g.res - 0.5;
+      const xi = Math.floor(x);
+      const yi = Math.floor(y);
+      if (xi >= 0 && yi >= 0 && xi + 1 < g.size && yi + 1 < g.size) {
+        const fx = x - xi;
+        const fy = y - yi;
+        const z00 = g.data[yi * g.size + xi];
+        const z10 = g.data[yi * g.size + xi + 1];
+        const z01 = g.data[(yi + 1) * g.size + xi];
+        const z11 = g.data[(yi + 1) * g.size + xi + 1];
+        const v =
+          z00 * (1 - fx) * (1 - fy) +
+          z10 * fx * (1 - fy) +
+          z01 * (1 - fx) * fy +
+          z11 * fx * fy;
+        if (Number.isFinite(v)) return v;
+      }
+    }
+    return this.sample2(E, N);
   }
 
   /** Upper envelope: max of the 4 posts around (E, N) on the 0.5 m grid. */

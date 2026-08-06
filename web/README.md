@@ -16,9 +16,12 @@ Any static host works for deployment (GitHub Pages etc.).
 ## Use
 
 - **Double-click** terrain (or press `E`, then click) to place an exit.
-  "Snap to lip" moves the click to the strongest nearby edge — the rendered
-  mesh is LOD-simplified, so raw clicks usually land a few metres back
-  from the actual lip.
+  "Snap to lip" moves the click to the nearby edge — the rendered mesh is
+  LOD-simplified, so raw clicks usually land a few metres off the actual
+  lip. The search runs on the 0.5 m grid and is built to stay ON the lip:
+  the edge-drop reward is capped (so ever-growing drop can't drag the
+  point down the face) and candidates with terrain rising above them
+  nearby are penalized (standing under the wall, not on top of it).
 - Sliders: push speed, sustained glide, sustained speed, lift ramp time,
   modelled height range, and safety margin. Everything recomputes live.
 - The flight model is point-mass aerodynamics (gravity + drag + lift,

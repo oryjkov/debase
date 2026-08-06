@@ -173,6 +173,10 @@ async function setExitAt(lon, lat, fromHash = false, exactLv95 = null, snapOpts 
     );
     await dem.settle();
 
+    // 0.5 m grid loads first: the snap searches on it, and the widened
+    // radius keeps 150 m near-field rays inside even after a 35 m snap.
+    status("loading 0.5 m near-field…", "busy");
+    await dem.loadNearField(e, n, 220);
     let moved = 0;
     if ($("chk-snap").checked && !fromHash) {
       const s = dem.snapToLip(e, n, snapOpts ?? {});
@@ -180,8 +184,6 @@ async function setExitAt(lon, lat, fromHash = false, exactLv95 = null, snapOpts 
       n = s.n;
       moved = s.moved;
     }
-    status("loading 0.5 m near-field…", "busy");
-    await dem.loadNearField(e, n, 170);
     const alt = await dem.elevation05(e, n);
     if (!Number.isFinite(alt)) {
       status("no elevation data here", "error");
