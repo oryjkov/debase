@@ -15,12 +15,20 @@ import { parseFlySight, segmentJump, extractFlight, fitModel } from "./track.js"
 import { TrackTimeline } from "./timeline.js";
 
 const TERRAIN_URL = "https://3d.geo.admin.ch/ch.swisstopo.terrain.3d/v1/";
+// swisstopo only serves tiles intersecting Switzerland; without coverage
+// bounds Cesium requests world tiles at low zooms and logs a 400 for each.
+// Applied on the provider AND the layer — the layer clip is the strict one.
+const CH_RECT = () => Cesium.Rectangle.fromDegrees(5.9, 45.7, 10.6, 47.9);
 const WMTS = (layer, fmt, maxLevel) =>
-  new Cesium.UrlTemplateImageryProvider({
-    url: `https://wmts.geo.admin.ch/1.0.0/${layer}/default/current/3857/{z}/{x}/{y}.${fmt}`,
-    maximumLevel: maxLevel,
-    credit: new Cesium.Credit("© swisstopo"),
-  });
+  new Cesium.ImageryLayer(
+    new Cesium.UrlTemplateImageryProvider({
+      url: `https://wmts.geo.admin.ch/1.0.0/${layer}/default/current/3857/{z}/{x}/{y}.${fmt}`,
+      maximumLevel: maxLevel,
+      rectangle: CH_RECT(),
+      credit: new Cesium.Credit("© swisstopo"),
+    }),
+    { rectangle: CH_RECT() }
+  );
 
 const AZ_COUNT = 72;
 const RAY_STEP = 4;
@@ -83,7 +91,7 @@ async function init() {
   });
   viewer = new Cesium.Viewer("cesium", {
     terrainProvider,
-    baseLayer: new Cesium.ImageryLayer(WMTS("ch.swisstopo.swissimage", "jpeg", 20)),
+    baseLayer: WMTS("ch.swisstopo.swissimage", "jpeg", 20),
     animation: false,
     timeline: false,
     baseLayerPicker: false,
@@ -717,7 +725,7 @@ function setLayer(which) {
   $("btn-sat").classList.toggle("active", which === "sat");
   $("btn-map").classList.toggle("active", which === "map");
   viewer.imageryLayers.removeAll();
-  viewer.imageryLayers.addImageryProvider(
+  viewer.imageryLayers.add(
     which === "sat"
       ? WMTS("ch.swisstopo.swissimage", "jpeg", 20)
       : WMTS("ch.swisstopo.pixelkarte-farbe", "jpeg", 18)
