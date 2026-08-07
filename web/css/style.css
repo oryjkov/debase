@@ -263,6 +263,35 @@ body.dragging::after {
 }
 .tab.active { color: #fff; background: var(--red); }
 
+#toolbar .divider {
+  width: 1px;
+  align-self: stretch;
+  margin: 6px 0;
+  background: var(--hairline);
+}
+
+/* Relief is an overlay toggle, not a third mode — indicator dot, no fill */
+button.toggle {
+  font: 600 12px var(--ui);
+  color: var(--ink-2);
+  background: transparent;
+  border: none;
+  padding: 8px 14px 8px 12px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+button.toggle i {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  border: 1px solid var(--ink-3);
+}
+button.toggle:hover { color: var(--ink); }
+button.toggle.active { color: var(--ink); }
+button.toggle.active i { background: var(--red); border-color: var(--red); }
+
 /* ---------- profile panel ---------- */
 #profile-panel[hidden] { display: none; }
 #profile-panel {

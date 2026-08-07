@@ -121,6 +121,8 @@ async function init() {
     recomputeTrack();
   });
 
+  setRelief(true); // contours + slope tint on by default
+
   viewer.camera.setView({
     destination: Cesium.Cartesian3.fromDegrees(7.98, 46.72, 7500),
     orientation: {
@@ -714,13 +716,15 @@ czm_material czm_getMaterial(czm_materialInput materialInput)
   });
 }
 
-$("btn-terrain").addEventListener("click", () => {
-  const on = !$("btn-terrain").classList.contains("active");
+function setRelief(on) {
   $("btn-terrain").classList.toggle("active", on);
   if (on && !terrainMaterial) terrainMaterial = makeTerrainMaterial();
   viewer.scene.globe.material = on ? terrainMaterial : undefined;
   viewer.scene.requestRender();
-});
+}
+$("btn-terrain").addEventListener("click", () =>
+  setRelief(!$("btn-terrain").classList.contains("active"))
+);
 function setLayer(which) {
   $("btn-sat").classList.toggle("active", which === "sat");
   $("btn-map").classList.toggle("active", which === "map");
