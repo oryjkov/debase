@@ -1,4 +1,6 @@
-# exit check — interactive wingsuit exit evaluation
+# debase — interactive wingsuit exit evaluation
+
+Live at <https://oryjkov.github.io/debase/>.
 
 Client-only web app: CesiumJS globe with swisstopo 3D terrain, satellite/map
 imagery, and swissALTI3D-based clearance analysis. No backend, no API keys —

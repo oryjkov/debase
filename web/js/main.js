@@ -694,7 +694,7 @@ czm_material czm_getMaterial(czm_materialInput materialInput)
 }`;
   return new Cesium.Material({
     fabric: {
-      type: "ExitCheckTerrain",
+      type: "DebaseTerrain",
       uniforms: {
         lineColor: Cesium.Color.fromCssColorString("#10161e").withAlpha(0.6),
         steepColor: new Cesium.Color(0.37, 0.55, 0.75, 0.5),
