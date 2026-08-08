@@ -72,6 +72,7 @@ let exit = null; // {e, n, alt, anchor: Cartesian3, preparedRadius}
 let results = null; // per-azimuth analyzeAzimuth results
 let selectedAz = null; // degrees
 let armed = false;
+let suppressClick = false; // eat the tap that ends a fired long-press
 let rayEntity = null;
 let exitEntity = null;
 let ghostEntity = null;
@@ -154,6 +155,11 @@ async function init() {
     Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK
   );
   handler.setInputAction((m) => {
+    // the finger-lift after a fired long-press also arrives here — swallow it
+    if (suppressClick) {
+      suppressClick = false;
+      return;
+    }
     if (armed) {
       arm(false);
       pickExit(m.position);
@@ -165,8 +171,48 @@ async function init() {
     }
   }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
 
+  // Long-press places the exit on touch — double-tap reads as "zoom" there
+  // and is never discovered. A still finger held ~½ s is the map-pin idiom.
+  const canvas = viewer.canvas;
+  let pressTimer = null;
+  const cancelPress = () => {
+    clearTimeout(pressTimer);
+    pressTimer = null;
+  };
+  canvas.addEventListener("pointerdown", (ev) => {
+    cancelPress(); // a second finger (pinch) must not fire the pending press
+    if (ev.pointerType !== "touch" || !ev.isPrimary) return;
+    const sx = ev.clientX;
+    const sy = ev.clientY;
+    pressTimer = setTimeout(() => {
+      pressTimer = null;
+      suppressClick = true;
+      arm(false);
+      navigator.vibrate?.(30);
+      const r = canvas.getBoundingClientRect();
+      pickExit(new Cesium.Cartesian2(sx - r.left, sy - r.top));
+    }, 550);
+    const move = (e) => {
+      if (Math.hypot(e.clientX - sx, e.clientY - sy) > 12) end();
+    };
+    const end = () => {
+      cancelPress();
+      canvas.removeEventListener("pointermove", move);
+      canvas.removeEventListener("pointerup", end);
+      canvas.removeEventListener("pointercancel", end);
+    };
+    canvas.addEventListener("pointermove", move);
+    canvas.addEventListener("pointerup", end);
+    canvas.addEventListener("pointercancel", end);
+  });
+
   restoreFromHash();
-  if (!exit) status("ready — double-click terrain to set an exit");
+  if (!exit)
+    status(
+      matchMedia("(pointer: coarse)").matches
+        ? "ready — press & hold terrain to set an exit"
+        : "ready — double-click terrain to set an exit"
+    );
 }
 
 function arm(on) {
