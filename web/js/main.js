@@ -13,6 +13,7 @@ import { HeadingDial } from "./dial.js";
 import { ProfileChart } from "./profile.js";
 import { parseFlySight, segmentJump, extractFlight, fitModel } from "./track.js";
 import { TrackTimeline } from "./timeline.js";
+import { initPanelChrome, isPhone } from "./panel.js";
 
 const TERRAIN_URL = "https://3d.geo.admin.ch/ch.swisstopo.terrain.3d/v1/";
 // swisstopo only serves tiles intersecting Switzerland; without coverage
@@ -40,6 +41,21 @@ const VERDICT_CSS = {
 };
 
 const $ = (id) => document.getElementById(id);
+
+// Canvases size themselves from clientWidth at draw time, so anything that
+// changes their layout (unfolding a section, rotating the phone) must redraw.
+const chrome = initPanelChrome({
+  onReveal: (sec) => {
+    if (sec.id === "analysis-section") dial?.draw();
+    if (sec.id === "track-section") timeline?.draw();
+  },
+});
+window.addEventListener("resize", () => {
+  dial?.draw();
+  timeline?.draw();
+  if (chart?.state) chart.draw();
+});
+
 const statusEl = $("status");
 function status(msg, cls = "") {
   statusEl.textContent = msg;
@@ -238,6 +254,7 @@ async function setExitAt(lon, lat, fromHash = false, exactLv95 = null, snapOpts 
 
     update();
     writeHash();
+    chrome.openSection("analysis-section");
   } catch (err) {
     console.error(err);
     status(`error: ${err.message}`, "error");
@@ -363,6 +380,9 @@ function selectHeading(azDeg, keep = false) {
   });
   viewer.scene.requestRender();
 
+  // On a phone the chart docks above the peeked sheet — drop the sheet the
+  // first time the profile opens so chart and map are both visible.
+  if ($("profile-panel").hidden && isPhone()) chrome.setSheet("peek");
   $("profile-panel").hidden = false;
   $("profile-title").textContent = `heading ${String(Math.round(selectedAz)).padStart(3, "0")}° · exit ${Math.round(exit.alt)} m`;
   chart.update(samples, prof, exit.alt, r, selectedAz, trackCurve(), bestProf);
@@ -390,6 +410,7 @@ function loadTrackText(text, name) {
     $("timeline").hidden = false;
     $("track-actions").hidden = false;
     $("ghost-controls").hidden = false;
+    chrome.openSection("track-section");
     recomputeTrack();
     setGhostHeading(selectedAz ?? track.flight.heading0 ?? 0);
   } catch (err) {
