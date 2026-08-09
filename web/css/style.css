@@ -15,6 +15,9 @@
   --crit: #d03b3b;
   --mono: "IBM Plex Mono", ui-monospace, monospace;
   --ui: "Archivo", system-ui, sans-serif;
+  /* Left gutter + panel width: where the usable map area starts. Anything
+     that centres over the map reads this instead of restating the sum. */
+  --panel-right: 312px;
 }
 
 * { box-sizing: border-box; margin: 0; }
@@ -282,17 +285,27 @@ body.dragging::after {
 #status.error { color: var(--crit); }
 
 /* ---------- layer toggle ---------- */
-#toolbar {
+/* Column so the busy pill stacks under the toolbar without a hardcoded
+   offset; the gap between them must not swallow map drags. */
+#top-right {
   position: absolute;
   top: 12px;
   right: 12px;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  pointer-events: none;
+}
+#toolbar {
   display: flex;
   background: var(--glass);
   backdrop-filter: blur(10px);
   border: 1px solid var(--hairline);
   border-radius: 8px;
   overflow: hidden;
-  z-index: 5;
+  pointer-events: auto;
 }
 .tab {
   font: 600 12px var(--ui);
@@ -333,11 +346,103 @@ button.toggle:hover { color: var(--ink); }
 button.toggle.active { color: var(--ink); }
 button.toggle.active i { background: var(--red); border-color: var(--red); }
 
+/* ---------- busy feedback ----------
+   Two tiers. The pill is ambient: tiles streaming in while the camera moves,
+   which otherwise reads as a hang. The card is for placing an exit — seconds
+   of COG range requests plus the ray loop, on an explicit user action.
+   Both spin on `transform`, so the compositor keeps them turning while the
+   72-azimuth analysis blocks the main thread. */
+.spinner {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: 2px solid var(--hairline);
+  border-top-color: var(--red);
+  animation: debase-spin 0.8s linear infinite;
+}
+.spinner.big { width: 26px; height: 26px; border-width: 3px; }
+@keyframes debase-spin { to { transform: rotate(360deg); } }
+
+#busy {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(240px, calc(100vw - 24px));
+  padding: 6px 11px 6px 9px;
+  background: var(--glass);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink-2);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.18s ease, visibility 0.18s;
+}
+#busy.on { opacity: 1; visibility: visible; }
+#busy span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Centred over the map, never modal: a stalled fetch must not trap the UI. */
+#working {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  z-index: 8;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.2s ease, visibility 0.2s;
+  background: radial-gradient(ellipse at center, rgba(16, 22, 30, 0.5), rgba(16, 22, 30, 0) 55%);
+}
+#working.on { opacity: 1; visibility: visible; }
+#working .card {
+  display: grid;
+  justify-items: center;
+  gap: 11px;
+  min-width: 210px;
+  padding: 20px 24px 18px;
+  background: var(--glass);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--ink);
+  text-align: center;
+}
+#working .bar {
+  width: 100%;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--hairline);
+  overflow: hidden;
+}
+/* Determinate while dem.prepare reports tile counts; the JS hides the bar
+   for the phases that have no count to give. */
+#working .bar i {
+  display: block;
+  height: 100%;
+  width: var(--progress, 0%);
+  background: var(--red);
+  transition: width 0.2s ease;
+}
+#working .bar[hidden] { display: none; }
+
+/* Clear the panel so the card centres over the map and the dim doesn't
+   make the controls read as disabled (they stay live — this is not modal). */
+@media (min-width: 641px) {
+  #working { left: var(--panel-right); }
+}
+
 /* ---------- profile panel ---------- */
 #profile-panel[hidden] { display: none; }
 #profile-panel {
   position: absolute;
-  left: 324px;
+  left: calc(var(--panel-right) + 12px);
   right: 12px;
   bottom: 12px;
   height: 240px;
@@ -387,8 +492,9 @@ button.toggle.active i { background: var(--red); border-color: var(--red); }
 #profile-tooltip b { color: var(--ink); font-weight: 500; }
 
 @media (max-width: 900px) {
+  :root { --panel-right: 262px; }
   #panel { width: 250px; }
-  #profile-panel { left: 274px; height: 200px; }
+  #profile-panel { height: 200px; }
 }
 
 /* ---------- whole-panel collapse — desktop; on phones the sheet does this ---------- */
@@ -453,12 +559,16 @@ button.toggle.active i { background: var(--red); border-color: var(--red); }
     padding-top: 6px;
   }
 
-  #toolbar {
+  #top-right {
     top: 12px;
     top: max(12px, env(safe-area-inset-top));
     right: 12px;
     right: max(12px, env(safe-area-inset-right));
   }
+
+  /* centre in the map area above the peeked sheet, not behind it */
+  #working { bottom: var(--peek-h, 92px); }
+  #working .card { min-width: 0; max-width: calc(100vw - 48px); }
 
   /* profile docks above the peeked sheet, full width */
   #profile-panel {
@@ -493,7 +603,7 @@ button.toggle.active i { background: var(--red); border-color: var(--red); }
   input[type="range"]::-moz-range-thumb { width: 15px; height: 15px; }
 
   /* backdrop blur over a live WebGL canvas is costly on phones */
-  #panel, #toolbar, #profile-panel {
+  #panel, #toolbar, #profile-panel, #busy, #working .card {
     backdrop-filter: none;
     background: rgba(16, 22, 30, 0.95);
   }
@@ -505,4 +615,12 @@ button.toggle.active i { background: var(--red); border-color: var(--red); }
 
 @media (prefers-reduced-motion: reduce) {
   #panel { transition: none; }
+  /* still needs to read as "working" — pulse instead of spin */
+  .spinner {
+    animation: debase-pulse 1.4s ease-in-out infinite;
+    border-color: var(--red);
+  }
+  @keyframes debase-pulse {
+    50% { opacity: 0.25; }
+  }
 }

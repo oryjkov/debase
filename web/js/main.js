@@ -60,6 +60,103 @@ const statusEl = $("status");
 function status(msg, cls = "") {
   statusEl.textContent = msg;
   statusEl.className = cls;
+  busyMsg = cls === "busy" ? msg : null;
+  refreshBusy();
+}
+
+/* ---------------- busy feedback ----------------
+ * The footer status line lives inside the panel — off-screen on a phone with
+ * the sheet peeked — and Cesium's tile queue had no readout at all, so any
+ * camera move looked like a hang. Two indicators, one source of truth:
+ * an ambient corner pill, and a centred card while an exit is computed
+ * (seconds of COG range requests on an explicit user action).
+ */
+const busyEl = $("busy");
+const workingEl = $("working");
+let busyMsg = null; // our own work, mirrored from status()
+let tileActive = 0; // Cesium tile requests in flight right now
+let tilesLoading = false; // debounced visibility of the above
+let exitWork = false; // setExitAt in flight — the card owns the message
+let exitWorkToken = 0; // newest placement wins when two overlap
+
+function refreshBusy() {
+  // While the card is up it owns the screen — and only OUR phase text may
+  // reach it. The ambient tile count must never leak in ("computing exit"
+  // showing a base-map counter), and a momentarily empty busyMsg must not
+  // blank it mid-computation, so the label is only ever overwritten, never
+  // cleared. One at a time: the card already says what the pill would.
+  if (exitWork) {
+    if (busyMsg) $("working-label").textContent = busyMsg;
+    busyEl.classList.remove("on");
+    workingEl.classList.add("on");
+    return;
+  }
+  workingEl.classList.remove("on");
+  const label = busyMsg ?? (tilesLoading ? `loading map · ${tileActive}` : null);
+  if (label) $("busy-label").textContent = label;
+  busyEl.classList.toggle("on", label !== null);
+}
+
+/** Show the exit card; returns the finisher to call in a `finally`. */
+function beginExitWork() {
+  const token = ++exitWorkToken;
+  exitWork = true;
+  setProgress(null);
+  $("working-label").textContent = "computing exit…"; // never a stale phase
+  refreshBusy();
+  // Placements can overlap — a second double-click lands long before the
+  // first multi-second COG fetch resolves. Only the newest owns the card, so
+  // a superseded one finishing first can't tear it down under the live one.
+  return () => {
+    if (token !== exitWorkToken) return;
+    exitWork = false;
+    refreshBusy();
+  };
+}
+
+/** Tile-fetch progress as a determinate bar; null → indeterminate phase. */
+function setProgress(a, b) {
+  const bar = $("working-bar");
+  const known = Number.isFinite(a) && b > 0;
+  bar.hidden = !known;
+  if (known) bar.style.setProperty("--progress", `${Math.round((a / b) * 100)}%`);
+}
+
+// Flips are delayed both ways: the spinner must not flash for tiles that
+// resolve in two frames, nor blink off between batches while a pan settles.
+// A pending timer's target is always !tilesLoading (it is only scheduled when
+// they differ, and tilesLoading changes only in the callback), so the timer's
+// existence IS the state — nothing else to track.
+let tileFlipTimer = null;
+function setTilesLoading(v, delay) {
+  if (v === tilesLoading) {
+    clearTimeout(tileFlipTimer); // a flip away is no longer wanted
+    tileFlipTimer = null;
+    return;
+  }
+  if (tileFlipTimer) return; // flip already scheduled
+  tileFlipTimer = setTimeout(() => {
+    tileFlipTimer = null;
+    tilesLoading = v;
+    refreshBusy();
+  }, delay);
+}
+
+/** Yield long enough for a paint — the ray loop below blocks the thread. */
+const nextPaint = () =>
+  new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+
+let tilePoll = null; // interval handle; null whenever the network is settled
+
+/** dem.prepare + settle, reporting the phase and a determinate bar. */
+async function fetchTiles(e, n, radius, label) {
+  status(`${label}…`, "busy");
+  await dem.prepare(e, n, radius, (a, b) => {
+    status(`${label} ${a}/${b}…`, "busy");
+    setProgress(a, b);
+  });
+  setProgress(null); // the phases after this have no count to give
+  await dem.settle();
 }
 
 /* ---------------- state ---------------- */
@@ -127,6 +224,42 @@ async function init() {
   });
   viewer.scene.globe.depthTestAgainstTerrain = true;
   window.viewer = viewer; // console/debug access
+  // Tiles streaming in after a camera move are the most common "is it stuck?"
+  // moment. Keyed on requests actually in flight, NOT globe.tilesLoaded /
+  // tileLoadProgressEvent: in wide oblique views tiles park in the load queue
+  // permanently (measured 100–150 of them, zero requests, hundreds of
+  // thousands of refused scheduling attempts), so tilesLoaded never goes true
+  // and an indicator keyed on it sticks on forever. In-flight count also gives
+  // an honest readout — the queue length has no denominator to make a % from.
+  // Polled, not driven off postRender: under requestRenderMode the render loop
+  // is the very thing that stops when the scene goes quiet. `?? 0` matters —
+  // if a Cesium upgrade moves this counter the pill goes dark rather than stuck.
+  // Sampled only while something might be in flight, never as a permanent
+  // heartbeat: a 4 Hz wakeup for the tab's whole life is real battery on the
+  // phones this targets, and foreground tabs are not throttled. The queue
+  // event is a trigger to start watching, NOT the truth about being busy —
+  // that's the counter it stalls on.
+  const sampleTiles = () => {
+    tileActive = Cesium.RequestScheduler?.statistics?.numberOfActiveRequests ?? 0;
+    // slower to clear than to appear: requests arrive in bursts with brief
+    // gaps, and a blinking pill is worse than a slightly lingering one
+    setTilesLoading(tileActive > 0, tileActive > 0 ? 400 : 800);
+    // Live count while working, but never repaint it as "· 0" during the
+    // linger — the pill would announce it is loading nothing.
+    if (tilesLoading && tileActive > 0) refreshBusy();
+    if (tileActive === 0 && !tilesLoading) {
+      clearInterval(tilePoll); // settled: stop until something stirs again
+      tilePoll = null;
+    }
+  };
+  const watchTiles = () => {
+    if (!tilePoll) tilePoll = setInterval(sampleTiles, 250);
+  };
+  viewer.camera.moveStart.addEventListener(watchTiles);
+  viewer.scene.globe.tileLoadProgressEvent.addEventListener((n) => {
+    if (n > 0) watchTiles();
+  });
+  watchTiles(); // the initial view streams tiles before any interaction
   surface = new TrajectorySurface(viewer);
   dial = new HeadingDial($("dial"), (az) => selectHeading(az));
   chart = new ProfileChart($("profile"), $("profile-tooltip"));
@@ -238,21 +371,19 @@ function pickExit(windowPos) {
 }
 
 async function setExitAt(lon, lat, fromHash = false, exactLv95 = null, snapOpts = null) {
+  const endExitWork = beginExitWork();
   try {
     const p = params();
     // exactLv95 avoids WGS84 round-trip drift when restoring a shared hash —
     // sub-metre shifts genuinely flip verdicts on a knife-edge lip.
     let { e, n } = exactLv95 ?? wgs84ToLv95(lon, lat);
     const radius = neededRadius(p);
-    status("fetching swissALTI3D tiles…", "busy");
-    await dem.prepare(e, n, radius, (a, b) =>
-      status(`fetching swissALTI3D tiles ${a}/${b}…`, "busy")
-    );
-    await dem.settle();
+    await fetchTiles(e, n, radius, "fetching swissALTI3D tiles");
 
     // 0.5 m grid loads first: the snap searches on it, and the widened
     // radius keeps 150 m near-field rays inside even after a 35 m snap.
     status("loading 0.5 m near-field…", "busy");
+    await nextPaint(); // snapToLip below is a long synchronous search
     await dem.loadNearField(e, n, 220);
     let moved = 0;
     if ($("chk-snap").checked && !fromHash) {
@@ -298,12 +429,14 @@ async function setExitAt(lon, lat, fromHash = false, exactLv95 = null, snapOpts 
       exitEntity.position = anchor;
     }
 
-    update();
+    await update();
     writeHash();
     chrome.openSection("analysis-section");
   } catch (err) {
     console.error(err);
     status(`error: ${err.message}`, "error");
+  } finally {
+    endExitWork();
   }
 }
 
@@ -320,50 +453,66 @@ function scheduleUpdate() {
   updateTimer = setTimeout(update, 180);
 }
 
+/**
+ * Recompute everything for the current sliders. Reports its own failures:
+ * scheduleUpdate fires it as a bare timer callback, so an unhandled rejection
+ * here would strand the last "busy" status — leaving the indicator spinning
+ * on a frozen label forever, the exact hang this is all meant to remove.
+ * `gen` drops superseded runs: every await is a chance for a newer update to
+ * start and finish first, and the loser must not write stale results back.
+ */
+let updateGen = 0;
 async function update() {
   if (!exit || !viewer) return;
-  const p = params();
-  const prof = planningProfile(p);
+  const gen = ++updateGen;
+  try {
+    const p = params();
+    const prof = planningProfile(p);
 
-  surface.build(exit.anchor, prof);
-  viewer.scene.requestRender();
+    surface.build(exit.anchor, prof);
+    viewer.scene.requestRender();
 
-  const radius = neededRadius(p);
-  if (radius > exit.preparedRadius) {
-    status("fetching more tiles…", "busy");
-    await dem.prepare(exit.e, exit.n, radius, (a, b) =>
-      status(`fetching tiles ${a}/${b}…`, "busy")
-    );
-    await dem.settle();
-    exit.preparedRadius = radius;
+    const radius = neededRadius(p);
+    if (radius > exit.preparedRadius) {
+      await fetchTiles(exit.e, exit.n, radius, "fetching more tiles");
+      exit.preparedRadius = radius; // the tiles really are cached now
+      if (gen !== updateGen) return;
+    }
+
+    status("analyzing…", "busy");
+    // The 72-azimuth loop below blocks the thread; without a frame here the
+    // indicator would only appear once the work it announces is already done.
+    await nextPaint();
+    if (gen !== updateGen) return;
+    const maxDist = Math.min(prof.maxRadius, radius);
+    results = [];
+    for (let i = 0; i < AZ_COUNT; i++) {
+      const az = (i * 2 * Math.PI) / AZ_COUNT;
+      // Near field: 0.5 m envelope + perpendicular clearance (first 150 m).
+      // Far field: 2 m vertical clearance, starting where the near field ends.
+      const near = analyzeNearField(prof, dem.nearRay(exit.e, exit.n, exit.alt, az));
+      const samples = dem.sampleRay(exit.e, exit.n, exit.alt, az, maxDist, RAY_STEP);
+      const far = analyzeAzimuth(prof, samples, { dMin: 140 });
+      far.near = near;
+      far.verdict = worseVerdict(nearVerdictFor(near), verdictFor(far.minClearance));
+      results.push(far);
+    }
+
+    const colors = results.map((r) => VERDICT_CSS[r.verdict]);
+    surface.build(exit.anchor, prof, colors);
+    viewer.scene.requestRender();
+    dial.update({ colors, enabled: true });
+
+    const nGreen = results.filter((r) => r.verdict === "green").length;
+    const nAmber = results.filter((r) => r.verdict === "amber").length;
+    status(`${nGreen * 5}° clear, ${nAmber * 5}° tight`);
+
+    if (selectedAz !== null) selectHeading(selectedAz, true);
+    writeHash();
+  } catch (err) {
+    console.error(err);
+    status(`error: ${err.message}`, "error");
   }
-
-  status("analyzing…", "busy");
-  const maxDist = Math.min(prof.maxRadius, radius);
-  results = [];
-  for (let i = 0; i < AZ_COUNT; i++) {
-    const az = (i * 2 * Math.PI) / AZ_COUNT;
-    // Near field: 0.5 m envelope + perpendicular clearance (first 150 m).
-    // Far field: 2 m vertical clearance, starting where the near field ends.
-    const near = analyzeNearField(prof, dem.nearRay(exit.e, exit.n, exit.alt, az));
-    const samples = dem.sampleRay(exit.e, exit.n, exit.alt, az, maxDist, RAY_STEP);
-    const far = analyzeAzimuth(prof, samples, { dMin: 140 });
-    far.near = near;
-    far.verdict = worseVerdict(nearVerdictFor(near), verdictFor(far.minClearance));
-    results.push(far);
-  }
-
-  const colors = results.map((r) => VERDICT_CSS[r.verdict]);
-  surface.build(exit.anchor, prof, colors);
-  viewer.scene.requestRender();
-  dial.update({ colors, enabled: true });
-
-  const nGreen = results.filter((r) => r.verdict === "green").length;
-  const nAmber = results.filter((r) => r.verdict === "amber").length;
-  status(`${nGreen * 5}° clear, ${nAmber * 5}° tight`);
-
-  if (selectedAz !== null) selectHeading(selectedAz, true);
-  writeHash();
 }
 
 /* ---------------- heading selection ---------------- */
