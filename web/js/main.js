@@ -34,6 +34,19 @@ const WMTS = (layer, fmt, maxLevel) =>
 
 const AZ_COUNT = 72;
 const RAY_STEP = 4;
+/**
+ * Verdicts judge only the first VERDICT_DROP metres of descent.
+ *
+ * The question a colour answers is "can I leave on this heading", and that is
+ * settled early — by the part of the flight you are committed to. Terrain
+ * deeper than this is a route decision with seconds of warning and a whole
+ * suit's worth of options, and letting it condemn a heading drowns out the
+ * near-exit signal that actually kills people. It also decouples the verdicts
+ * from the range slider, which now only sets how much is drawn and charted.
+ * The profile chart marks where this window ends, because terrain past it is
+ * still on screen and must not read as judged.
+ */
+const VERDICT_DROP = 500;
 const VERDICT_CSS = {
   green: "#0ca30c",
   amber: "#fab219",
@@ -565,7 +578,10 @@ async function update() {
     // indicator would only appear once the work it announces is already done.
     await nextPaint();
     if (!current()) return;
-    const maxDist = Math.min(prof.maxRadius, radius);
+    // Clamped to the modelled range, which the slider can take below the
+    // window — past hRange the profile is extrapolated, not simulated.
+    const verdictDrop = Math.min(VERDICT_DROP, p.hRange);
+    const maxDist = Math.min(prof.radiusAt(verdictDrop), radius);
     results = [];
     for (let i = 0; i < AZ_COUNT; i++) {
       const az = (i * 2 * Math.PI) / AZ_COUNT;
@@ -575,12 +591,14 @@ async function update() {
       const samples = dem.sampleRay(exit.local.x, exit.local.y, exit.alt, az, maxDist, RAY_STEP);
       const far = analyzeAzimuth(prof, samples, { dMin: 140 });
       far.near = near;
+      far.verdictDrop = verdictDrop; // the chart draws where judging stopped
+      far.verdictD = maxDist;
       far.verdict = worseVerdict(nearVerdictFor(near), verdictFor(far.minClearance));
       results.push(far);
     }
 
     const colors = results.map((r) => VERDICT_CSS[r.verdict]);
-    surface.build(exit.anchor, prof, colors);
+    surface.build(exit.anchor, prof, colors, verdictDrop);
     viewer.scene.requestRender();
     dial.update({ colors, enabled: true });
 
@@ -634,7 +652,9 @@ function selectHeading(azDeg, keep = false) {
     (Number.isFinite(r.requiredGlide)
       ? `required glide ${r.requiredGlide.toFixed(2)}\n`
       : "required glide — blocked\n") +
-    (r.impactKind ? `${r.impactKind} at ${Math.round(r.impactD)} m out` : "airborne at range end");
+    (r.impactKind
+      ? `${r.impactKind} at ${Math.round(r.impactD)} m out`
+      : `airborne through ${Math.round(r.verdictDrop ?? VERDICT_DROP)} m of drop`);
 
   // 3D trajectory line along the selected heading
   const enu = Cesium.Transforms.eastNorthUpToFixedFrame(exit.anchor);
@@ -936,12 +956,12 @@ const HELP = {
   glide: ["glide", "Sustained glide ratio of established flight: metres forward per metre of drop, once the suit is flying steadily. This is the cone's far-field slope. Set it from your suit and your tracks, not from a good day's memory."],
   speed: ["speed", "Sustained total airspeed in established flight. Together with glide it fixes the model's lift and drag coefficients, which shape the whole dive-to-flight curve — not just the far field."],
   ramp: ["ramp", "Seconds for lift to build after exit (suit pressurization and dive-out). Slick ≈ 0, small suits 1–2 s, big suits several. A longer ramp means a deeper dive before the curve bends forward."],
-  range: ["range", "How far below the exit the surface and the analysis extend. Terrain deeper than this is not evaluated — headings shown clear may still have obstacles beyond the range."],
+  range: ["range", "How far below the exit the surface and the profile chart extend. This is a drawing control, not a safety one: verdicts always judge the first 500 m of descent and nothing deeper, whatever the range is set to. Raise it to see where a flight ends up, lower it to declutter."],
   margin: ["margin", "Safety derate: the surface, the heading verdicts and the solid chart line use sustained glide reduced by this percentage. The dotted chart line is the undiluted best estimate. 0 % means planning on your best-day numbers."],
   snap: ["snap to lip", "Clicks land on the rendered 3D mesh, which is metres coarser than the real data — usually a step back from the edge. Snapping moves the exit to the strongest nearby drop; for a track's exit it also matches the GPS altitude, since horizontal GPS error tends to put the point over the edge."],
   ghost: ["ghost", "Shows the recorded flight path, translated to the current exit with its turns preserved. Dashed violet in 3D and in the profile chart."],
   aim: ["aim", "True direction (°T) of the ghost's initial flight, taken straight from the track's Doppler velocities. It snaps to the heading you pick on the dial, then adjusts freely — the whole recorded path rotates rigidly around the exit."],
-  verdicts: ["heading verdicts", "Headings are TRUE azimuths (°T) — north is true north, not grid or magnetic north; subtract your local declination to fly one off a compass. Each 5° heading combines two checks and shows the worse. Near the exit (first 150 m, 0.5 m terrain dilated by position uncertainty): metres of air between the flight path and rock, which must grow as the flight develops — red under ×1 of needed, amber under ×2. Further out (2 m terrain): vertical clearance under the planning trajectory — red below 30 m, amber below 100 m."],
+  verdicts: ["heading verdicts", "Headings are TRUE azimuths (°T) — north is true north, not grid or magnetic north; subtract your local declination to fly one off a compass. Verdicts judge the first 500 m of descent only — the part of the flight you are committed to — so terrain deeper than that never colours a heading; the profile chart marks where judging stops. Each 5° heading combines two checks and shows the worse. Near the exit (first 150 m, 0.5 m terrain dilated by position uncertainty): metres of air between the flight path and rock, which must grow as the flight develops — red under ×1 of needed, amber under ×2. Further out (2 m terrain): vertical clearance under the planning trajectory — red below 30 m, amber below 100 m."],
 };
 const helpPop = document.createElement("div");
 helpPop.id = "help-pop";

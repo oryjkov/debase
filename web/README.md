@@ -27,6 +27,8 @@ Any static host works for deployment (GitHub Pages etc.).
   nearby are penalized (standing under the wall, not on top of it).
 - Sliders: push speed, sustained glide, sustained speed, lift ramp time,
   modelled height range, and safety margin. Everything recomputes live.
+  **Range is a drawing control, not a safety one** — it sets how far the
+  surface and chart extend, and moving it does not change a single verdict.
 - The flight model is point-mass aerodynamics (gravity + drag + lift,
   RK4-integrated, air density scaling with altitude): sustained glide and
   speed define the drag/lift coefficients; lift ramps in over the first
@@ -38,7 +40,12 @@ Any static host works for deployment (GitHub Pages etc.).
   that drives the surface, verdicts, and chart (best-estimate shown dotted
   alongside). Safety is a visible knob, never baked into the fit.
 - The translucent surface is the planning trajectory revolved through
-  360°; sector colors are verdicts per 5° heading, the worse of two checks:
+  360°; sector colors are verdicts per 5° heading, the worse of two checks.
+  Both judge only the **first 500 m of descent** — the part of the flight
+  you are committed to. Deeper terrain is a route decision with seconds of
+  warning and a suit's worth of options, and letting it condemn a heading
+  buries the near-exit signal that matters; the profile chart shades and
+  labels everything past the window so it cannot read as judged.
   - **Near field (first 150 m):** vertical clearance is ill-conditioned
     against near-vertical terrain (±0.5 m of DEM registration swings it by
     tens of metres), so close to the exit the check is *perpendicular air*
@@ -47,9 +54,9 @@ Any static host works for deployment (GitHub Pages etc.).
     uncertainty). Required air grows with altitude lost (1 + 0.08·drop,
     capped 12 m) — clearance must *diverge*, absolute thresholds would
     condemn every big-wall launch. Red under ×1 of needed, amber under ×2.
-  - **Far field:** vertical clearance under the planning trajectory on the
-    2 m grid (validated to agree with 0.5 m beyond the lip zone): red
-    < 30 m, amber < 100 m.
+  - **Far field (to 500 m of drop):** vertical clearance under the planning
+    trajectory on the 2 m grid (validated to agree with 0.5 m beyond the lip
+    zone): red < 30 m, amber < 100 m.
   The heading readout also shows the measured (model-free) rock drop at
   5/10/20 m out from the 0.5 m envelope.
 - Click the dial (or a surface sector) to open the altitude-vs-distance

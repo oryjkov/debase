@@ -31,8 +31,14 @@ export class TrajectorySurface {
    * render neutral. Rebuilding is cheap (~6k vertices), so verdict updates
    * re-call this rather than mutating per-instance attributes (which race
    * with requestRenderMode's lazy first render).
+   *
+   * `colorDrop` is where the verdict stops applying. The surface keeps going
+   * to profile.hRange — the flight really does continue — but below that drop
+   * it reverts to neutral, because a red skirt a kilometre down would claim a
+   * judgement that was never made. Each sector therefore becomes up to two
+   * instances that share the boundary ring, so there is no seam between them.
    */
-  build(exitCartesian, profile, colors = null) {
+  build(exitCartesian, profile, colors = null, colorDrop = Infinity) {
     this.clear();
     const enu = Cesium.Transforms.eastNorthUpToFixedFrame(exitCartesian);
 
@@ -43,10 +49,59 @@ export class TrajectorySurface {
     drops.push(profile.hTrans);
     for (let h = profile.hTrans + 40; h < profile.hRange; h += 40) drops.push(h);
     drops.push(profile.hRange);
-    const rings = drops.map((h) => ({ r: profile.radiusAt(h), z: -h }));
+    // The boundary must be an exact ring, or the colour change lands on
+    // whichever ring happens to be nearest and drifts with the slider.
+    const bound = Math.min(colorDrop, profile.hRange);
+    if (bound > 0 && bound < profile.hRange) drops.push(bound);
+    drops.sort((a, b) => a - b);
+    const rings = drops.map((h) => ({ h, r: profile.radiusAt(h), z: -h }));
 
     const instances = [];
     const twoPi = Math.PI * 2;
+
+    /** One instance spanning rings[i0..i1], in `color`. */
+    const strip = (s, dir0, dir1, i0, i1, color) => {
+      const n = i1 - i0 + 1;
+      const positions = new Float64Array(n * 2 * 3);
+      for (let i = 0; i < n; i++) {
+        const { r, z } = rings[i0 + i];
+        positions.set([dir0[0] * r, dir0[1] * r, z, dir1[0] * r, dir1[1] * r, z], i * 6);
+      }
+      const indices = new Uint16Array((n - 1) * 6);
+      for (let i = 0; i < n - 1; i++) {
+        const b = i * 2;
+        indices.set([b, b + 1, b + 2, b + 1, b + 3, b + 2], i * 6);
+      }
+      return new Cesium.GeometryInstance({
+        // Plain-number id: getGeometryInstanceAttributes matches by ===.
+        // Both strips of a sector share it so either one picks the heading.
+        id: s,
+        geometry: new Cesium.Geometry({
+          attributes: new Cesium.GeometryAttributes({
+            position: new Cesium.GeometryAttribute({
+              componentDatatype: Cesium.ComponentDatatype.DOUBLE,
+              componentsPerAttribute: 3,
+              values: positions,
+            }),
+          }),
+          indices,
+          primitiveType: Cesium.PrimitiveType.TRIANGLES,
+          boundingSphere: Cesium.BoundingSphere.fromVertices(Array.from(positions)),
+        }),
+        attributes: { color: Cesium.ColorGeometryInstanceAttribute.fromColor(color) },
+      });
+    };
+
+    // Index of the boundary ring; the judged strip ends here and the neutral
+    // one starts here, sharing the ring.
+    let iBound = rings.length - 1;
+    for (let i = 0; i < rings.length; i++) {
+      if (rings[i].h >= bound) {
+        iBound = i;
+        break;
+      }
+    }
+
     for (let s = 0; s < this.sectors; s++) {
       // Sector s is centred on the analysis ray azimuth s/sectors*360°.
       const a0 = ((s - 0.5) / this.sectors) * twoPi;
@@ -54,41 +109,13 @@ export class TrajectorySurface {
       // azimuth 0 = north = +y in ENU; clockwise toward east (+x)
       const dir0 = [Math.sin(a0), Math.cos(a0)];
       const dir1 = [Math.sin(a1), Math.cos(a1)];
-      const positions = new Float64Array(rings.length * 2 * 3);
-      for (let i = 0; i < rings.length; i++) {
-        const { r, z } = rings[i];
-        positions.set([dir0[0] * r, dir0[1] * r, z, dir1[0] * r, dir1[1] * r, z], i * 6);
+      const judged = colors?.[s]
+        ? Cesium.Color.fromCssColorString(colors[s]).withAlpha(0.38)
+        : NEUTRAL();
+      if (iBound > 0) instances.push(strip(s, dir0, dir1, 0, iBound, judged));
+      if (iBound < rings.length - 1) {
+        instances.push(strip(s, dir0, dir1, iBound, rings.length - 1, NEUTRAL()));
       }
-      const indices = new Uint16Array((rings.length - 1) * 6);
-      for (let i = 0; i < rings.length - 1; i++) {
-        const b = i * 2;
-        indices.set([b, b + 1, b + 2, b + 1, b + 3, b + 2], i * 6);
-      }
-      instances.push(
-        new Cesium.GeometryInstance({
-          // Plain-number id: getGeometryInstanceAttributes matches by ===
-          id: s,
-          geometry: new Cesium.Geometry({
-            attributes: new Cesium.GeometryAttributes({
-              position: new Cesium.GeometryAttribute({
-                componentDatatype: Cesium.ComponentDatatype.DOUBLE,
-                componentsPerAttribute: 3,
-                values: positions,
-              }),
-            }),
-            indices,
-            primitiveType: Cesium.PrimitiveType.TRIANGLES,
-            boundingSphere: Cesium.BoundingSphere.fromVertices(Array.from(positions)),
-          }),
-          attributes: {
-            color: Cesium.ColorGeometryInstanceAttribute.fromColor(
-              colors?.[s]
-                ? Cesium.Color.fromCssColorString(colors[s]).withAlpha(0.38)
-                : NEUTRAL()
-            ),
-          },
-        })
-      );
     }
 
     this.primitive = this.viewer.scene.primitives.add(

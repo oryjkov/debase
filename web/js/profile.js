@@ -211,6 +211,35 @@ export class ProfileChart {
       ctx.fillText("terrain", L.x(sMid.d), L.y(exitAlt - sMid.tDrop) + 8);
     }
 
+    // Where judging stopped. The chart keeps drawing terrain past this, and
+    // without a boundary a strike beyond it reads as a strike the green
+    // verdict ignored — so say plainly that nothing here was judged.
+    if (analysis && Number.isFinite(analysis.verdictD) && analysis.verdictD < L.maxD) {
+      const bx = L.x(analysis.verdictD);
+      ctx.save();
+      ctx.strokeStyle = INK.muted;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([2, 4]);
+      ctx.beginPath();
+      ctx.moveTo(bx, L.pad.t);
+      ctx.lineTo(bx, L.pad.t + L.h);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      // Shade the unjudged remainder rather than relying on the rule alone.
+      ctx.fillStyle = "rgba(92,111,128,0.10)";
+      ctx.fillRect(bx, L.pad.t, L.pad.l + L.w - bx, L.h);
+      ctx.fillStyle = INK.muted;
+      ctx.font = ui;
+      ctx.textAlign = "left";
+      ctx.textBaseline = "top";
+      ctx.fillText(
+        `not judged past ${Math.round(analysis.verdictDrop)} m down`,
+        bx + 5,
+        L.pad.t + 4
+      );
+      ctx.restore();
+    }
+
     // verdict markers, each with a text label
     if (analysis) {
       if (analysis.minClearanceD !== null && Number.isFinite(analysis.minClearance)) {
