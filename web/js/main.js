@@ -941,6 +941,7 @@ for (const id of ["sl-v0", "sl-gl", "sl-sp", "sl-ramp", "sl-hr", "sl-margin"]) {
 
 $("btn-set").addEventListener("click", () => arm(!armed));
 window.addEventListener("keydown", (ev) => {
+  if (aboutDialog.open) return; // the modal owns the keyboard; Esc closes it natively
   if (ev.key === "e" || ev.key === "E") {
     if (document.activeElement?.tagName !== "INPUT") arm(!armed);
   }
@@ -986,6 +987,20 @@ document.addEventListener("click", (ev) => {
   } else if (!ev.target.closest?.("#help-pop")) {
     helpPop.hidden = true;
   }
+});
+
+/* ---------------- about ---------------- */
+const aboutDialog = $("about-dialog");
+function openAbout() {
+  helpPop.hidden = true;
+  if (!aboutDialog.open) aboutDialog.showModal();
+}
+$("btn-about").addEventListener("click", openAbout);
+$("lnk-about").addEventListener("click", openAbout);
+$("btn-close-about").addEventListener("click", () => aboutDialog.close());
+// clicking the backdrop lands on the dialog itself — its children fill it
+aboutDialog.addEventListener("click", (ev) => {
+  if (ev.target === aboutDialog) aboutDialog.close();
 });
 
 $("btn-sat").addEventListener("click", () => setLayer("sat"));

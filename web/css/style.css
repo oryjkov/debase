@@ -281,6 +281,23 @@ body.dragging::after {
   font-size: 10px;
   color: var(--ink-3);
 }
+/* a long error message must not push the about link out of the footer */
+#status { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#panel footer .credit { flex: none; }
+#lnk-about {
+  font: inherit;
+  color: var(--ink-3);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: var(--hairline);
+  text-underline-offset: 2px;
+}
+#lnk-about:hover,
+#lnk-about:focus-visible { color: var(--ink); text-decoration-color: var(--red); }
+
 #status.busy { color: var(--warn); }
 #status.error { color: var(--crit); }
 
@@ -345,6 +362,120 @@ button.toggle i {
 button.toggle:hover { color: var(--ink); }
 button.toggle.active { color: var(--ink); }
 button.toggle.active i { background: var(--red); border-color: var(--red); }
+
+/* about: icon-only so the toolbar stays narrow on phones */
+#btn-about {
+  display: inline-flex;
+  align-items: center;
+  background: transparent;
+  border: none;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+#btn-about i {
+  display: grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  border: 1.5px solid var(--ink-3);
+  color: var(--ink-3);
+  font: 700 9.5px/1 var(--ui);
+  font-style: normal;
+}
+#btn-about:hover i,
+#btn-about:focus-visible i { color: var(--ink); border-color: var(--ink); }
+
+/* ---------- about dialog ---------- */
+/* The global `* { margin: 0 }` reset kills the centring a modal <dialog>
+   normally gets for free — hence the explicit auto margins. */
+#about-dialog {
+  margin: auto;
+  width: min(560px, calc(100vw - 24px));
+  max-height: min(80dvh, 760px);
+  padding: 0;
+  background: var(--glass-solid);
+  color: var(--ink);
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.6);
+  overflow: hidden;
+  flex-direction: column;
+}
+#about-dialog[open] { display: flex; }
+#about-dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
+
+.about-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--hairline);
+}
+.about-head h2 {
+  font-size: 15px;
+  font-weight: 700;
+  font-stretch: 118%;
+  letter-spacing: 0.24em;
+}
+#btn-close-about {
+  margin-left: auto;
+  font: 400 18px/1 var(--ui);
+  color: var(--ink-3);
+  background: none;
+  border: none;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+#btn-close-about:hover,
+#btn-close-about:focus-visible { color: var(--ink); }
+
+.about-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding: 14px 16px 18px;
+  font: 400 12.5px/1.6 var(--ui);
+  color: var(--ink-2);
+}
+.about-body .lead { color: var(--ink); }
+.about-body p + p { margin-top: 8px; }
+.about-body h3 {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin: 18px 0 7px;
+}
+.about-body ul { margin: 0; padding-left: 17px; }
+.about-body li + li { margin-top: 5px; }
+.about-body b { color: var(--ink); font-weight: 600; }
+.about-body a {
+  color: var(--ink);
+  font-family: var(--mono);
+  text-decoration: underline;
+  text-decoration-color: var(--red);
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 3px;
+}
+.about-body a:hover,
+.about-body a:focus-visible { color: #fff; text-decoration-thickness: 2px; }
+.sources li { list-style: none; margin-left: -17px; }
+.sources li::before { content: "—"; color: var(--ink-3); margin-right: 7px; }
+
+/* the one block on the page that has to be read, not skimmed */
+.warn-box {
+  border-left: 2px solid var(--warn);
+  background: rgba(250, 178, 25, 0.06);
+  border-radius: 0 6px 6px 0;
+  padding: 11px 13px;
+}
+.warn-box b { color: var(--warn); }
+.warn-box ul { margin: 8px 0; }
 
 /* ---------- busy feedback ----------
    Two tiers. The pill is ambient: tiles streaming in while the camera moves,
@@ -584,6 +715,13 @@ button.toggle.active i { background: var(--red); border-color: var(--red); }
 
   /* keep Cesium attribution above the peeked sheet */
   #cesium .cesium-viewer-bottom { bottom: calc(var(--peek-h, 92px) + 2px); }
+
+  /* about fills the phone, clear of the notch and the home indicator */
+  #about-dialog {
+    width: calc(100vw - 16px);
+    max-height: calc(100dvh - 24px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+  }
+  .about-body { padding-bottom: max(18px, env(safe-area-inset-bottom, 0px)); }
 }
 
 /* ---------- touch ergonomics ---------- */
@@ -598,6 +736,10 @@ button.toggle.active i { background: var(--red); border-color: var(--red); }
   .tab, button.toggle { padding-top: 11px; padding-bottom: 11px; }
   button.primary { padding-top: 10px; padding-bottom: 10px; }
   #btn-close-profile { font-size: 20px; padding: 4px 10px; }
+  #btn-close-about { font-size: 22px; padding: 4px 10px; }
+  #btn-about { padding-top: 11px; padding-bottom: 11px; }
+  #lnk-about { position: relative; }
+  #lnk-about::after { content: ""; position: absolute; inset: -10px -8px; }
   input[type="range"] { height: 32px; }
   input[type="range"]::-webkit-slider-thumb { width: 17px; height: 17px; margin-top: -7px; }
   input[type="range"]::-moz-range-thumb { width: 15px; height: 15px; }

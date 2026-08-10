@@ -104,7 +104,7 @@
 
     <footer>
       <span id="status">idle</span>
-      <span class="credit">terrain &amp; elevation © swisstopo</span>
+      <span class="credit"><button id="lnk-about" type="button">about</button> · © swisstopo</span>
     </footer>
   </aside>
 
@@ -114,6 +114,8 @@
       <button id="btn-map" class="tab">Map</button>
       <span class="divider"></span>
       <button id="btn-terrain" class="toggle active" title="contour lines + steep-slope tint"><i></i>Relief</button>
+      <span class="divider"></span>
+      <button id="btn-about" title="about, data sources &amp; disclaimer" aria-label="About, data sources and disclaimer"><i>i</i></button>
     </div>
     <div id="busy" role="status"><i class="spinner" aria-hidden="true"></i><span id="busy-label">loading…</span></div>
   </div>
@@ -141,6 +143,72 @@
       <div id="profile-tooltip"></div>
     </div>
   </div>
+
+  <dialog id="about-dialog" aria-labelledby="about-title">
+    <div class="about-head">
+      <h2 id="about-title">DEBASE</h2>
+      <button id="btn-close-about" type="button" title="close" aria-label="close">×</button>
+    </div>
+    <div class="about-body">
+      <p class="lead">
+        Place an exit point on Swiss terrain and debase flies a point-mass wingsuit
+        model out along every heading, judging how much air each one leaves you
+        against swisstopo's 0.5 m elevation data.
+      </p>
+      <p>
+        Everything runs in your browser. There is no backend and no account: exits,
+        parameters and any FlySight track you load stay on this machine, and the only
+        thing that leaves it is a request for public map tiles. Coverage is
+        Switzerland only — that is where the elevation data ends.
+      </p>
+
+      <h3>Source</h3>
+      <p>
+        <a href="https://github.com/oryjkov/debase" target="_blank" rel="noopener noreferrer">github.com/oryjkov/debase</a>
+        — the code, the method, and the reasoning behind the numbers.
+      </p>
+
+      <h3>Data &amp; libraries</h3>
+      <ul class="sources">
+        <li><b>swissALTI3D</b> — the elevation model every number is measured from, read
+          straight from the published cloud-optimised GeoTIFFs (0.5 m near the exit,
+          2 m further out). © swisstopo, open data.</li>
+        <li><b>swisstopo 3D terrain</b> — the mesh you see and click on. It is a
+          simplified rendering, not the analysed surface. © swisstopo.</li>
+        <li><b>SWISSIMAGE</b> and <b>swisstopo colour map</b> — the satellite and map
+          layers, via the public WMTS service. © swisstopo.</li>
+        <li><b>CesiumJS</b> — globe rendering. Apache-2.0.</li>
+        <li><b>geotiff.js</b> — reads the elevation rasters by HTTP range
+          request. MIT.</li>
+      </ul>
+
+      <h3>Disclaimer</h3>
+      <div class="warn-box">
+        <p><b>This is a planning aid, not a go/no-go authority.</b></p>
+        <ul>
+          <li>The terrain you see is not the terrain that is measured. The rendered
+            mesh is smoothed and simplified; the verdicts come from elevation rasters
+            captured by a periodic aerial survey, which is not a current picture of
+            the rock.</li>
+          <li>That data carries roughly half a metre of positional uncertainty. Against
+            near-vertical rock, half a metre is tens of metres of apparent clearance.</li>
+          <li>Verdicts judge the <b>first 500 m of descent and nothing deeper</b>. A
+            clear heading says nothing about what waits below that.</li>
+          <li>The flight model is a fit, not your flight. Real glide moves with suit,
+            body position, temperature, altitude and the day.</li>
+          <li>Nothing here models wind, turbulence, rotor, cables, wires, trees, snow,
+            other traffic, access, legality, or anything else absent from an elevation
+            raster.</li>
+        </ul>
+        <p>
+          Verify everything on the ground, with your own eyes and your own judgement.
+          Wingsuit BASE jumping can kill you, and a green sector on this page changes
+          nothing about that. If you step off a cliff on the strength of what you read
+          here, the decision and the risk are entirely yours. No warranty of any kind.
+        </p>
+      </div>
+    </div>
+  </dialog>
 
   <script type="module" src="js/main.js"></script>
 </body>

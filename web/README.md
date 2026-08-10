@@ -73,6 +73,13 @@ Any static host works for deployment (GitHub Pages etc.).
   2 m far field is unaffected; a knife-edge near-field margin can flip.
   Links minted before the coordinate rework carried LV95 eastings and are
   not readable.
+- **About** (the `i` in the toolbar, or `about` in the panel footer) opens a
+  modal with the data provenance — which swisstopo product each number and
+  each pixel comes from — and the disclaimer: rendered mesh ≠ analysed
+  terrain, ~0.5 m of positional uncertainty against vertical rock, verdicts
+  blind past 500 m of descent, no wind or wires or weather anywhere in the
+  model. It is the one place that says plainly that this is a planning aid
+  and the risk is the reader's.
 - **Relief** (toolbar toggle, on by default) overlays 50 m contour lines
   and a steel-blue tint on slopes steeper than ~50°, on top of either
   base layer (Satellite/Map are the exclusive pair; Relief is additive). Draped imagery
