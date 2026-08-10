@@ -143,9 +143,22 @@ function setTilesLoading(v, delay) {
   }, delay);
 }
 
-/** Yield long enough for a paint — the ray loop below blocks the thread. */
+/**
+ * Yield long enough for a paint — the ray loop below blocks the thread.
+ *
+ * The timer races the frame because a hidden tab never fires
+ * requestAnimationFrame at all, and these yields sit inside the exit
+ * placement: on a phone, backgrounding the browser during a minute of COG
+ * fetches is the normal case, not the edge one, and awaiting a frame that
+ * cannot arrive stalls the placement until the user comes back. Resolving a
+ * promise twice is a no-op, so whichever fires first wins and the visible
+ * case still yields a real frame.
+ */
 const nextPaint = () =>
-  new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+  new Promise((r) => {
+    requestAnimationFrame(() => setTimeout(r, 0));
+    setTimeout(r, 100);
+  });
 
 let tilePoll = null; // interval handle; null whenever the network is settled
 
