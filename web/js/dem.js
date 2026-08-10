@@ -6,10 +6,13 @@
  * uses). The 0.5 m COG is used for the exit elevation, where half a metre of
  * lip position genuinely matters, via a small windowed range-read.
  *
- * All sampling is done in LV95 (EPSG:2056); heights are LN02 metres.
+ * COORDINATES. Every public method speaks the caller's local ENU frame
+ * (metres east/north of the frame origin, set once via setFrame). LV95
+ * (EPSG:2056) is private to this file — it is where these particular tiles
+ * happen to be stored, not a fact about the app. Heights are LN02 metres.
  */
 
-import { lv95ToWgs84 } from "./lv95.js";
+import { wgs84ToLv95 } from "./lv95.js";
 
 const STAC_ITEMS =
   "https://data.geo.admin.ch/api/stac/v0.9/collections/ch.swisstopo.swissalti3d/items";
@@ -19,31 +22,94 @@ const NODATA_BELOW = -1000;
 export const tileKey = (e, n) =>
   `${Math.floor(e / 1000)}-${Math.floor(n / 1000)}`;
 
+/**
+ * Axis-aligned bounds of the local square [cx±r, cy±r] under `project`
+ * (which returns a [u, v] pair). ALL FOUR corners, always: the local frame
+ * is rotated relative to both lon/lat and the tile grid, so folding two
+ * diagonal corners under-covers the square by ~r·sin γ — 7.7 m at r = 220
+ * and γ = 2°, which is silent nodata at the corners, not an obvious break.
+ */
+function cornerBounds(cx, cy, r, project) {
+  let u0 = Infinity;
+  let u1 = -Infinity;
+  let v0 = Infinity;
+  let v1 = -Infinity;
+  for (const [dx, dy] of [[-r, -r], [r, -r], [-r, r], [r, r]]) {
+    const [u, v] = project(cx + dx, cy + dy);
+    u0 = Math.min(u0, u);
+    u1 = Math.max(u1, u);
+    v0 = Math.min(v0, v);
+    v1 = Math.max(v1, v);
+  }
+  return { u0, u1, v0, v1 };
+}
+
 export class Dem {
   constructor() {
     this.items = new Map(); // key -> {href05, href2}
     this.tiles2 = new Map(); // key -> Promise<{data,w,h,e0,n1,res}> (2 m grids)
     this.tiffs = new Map(); // href -> Promise<GeoTIFF>
     this.near = null; // composite 0.5 m grid around the current exit
+    this.frame = null;
+    this.aff = null; // local -> LV95, calibrated per frame
   }
 
   /**
-   * Discover tiles for a circle around exit (LV95, metres) and start
-   * loading the 2 m grids. Returns when the item index is complete;
-   * onProgress(loaded, total) fires as tile data arrives.
+   * Anchor sampling to a local ENU frame.
+   *
+   * Calibrates an affine local→LV95 map from ±2 km baselines about the
+   * origin, so sampling costs four transforms per exit instead of a
+   * polynomial evaluation per sample. The 2×2 comes out as exactly
+   * rotation-by-−γ (meridian convergence) times 1/k, which is why nothing
+   * outside this file has to know γ exists.
+   *
+   * The baselines are CENTRAL differences on purpose. A parallel is not a
+   * straight line in a conformal projection — it curves at tan(φ)/2N ≈
+   * 8e-8 m⁻¹ — and a one-sided fit straddles that quadratic lopsidedly,
+   * costing 40 mm at 220 m and up to 2.9 m asymmetrically at 5 km.
+   * Centred, the affine reproduces the frame to first order and what is
+   * left is the frame's own curvature: 4 mm at the 220 m near-field radius,
+   * 2.1 m at the 5 km far-field limit (0.02° of azimuth — see frame.js).
    */
-  async prepare(exitE, exitN, radius, onProgress = () => {}) {
+  setFrame(frame) {
+    const B = 2000;
+    const at = (x, y) => wgs84ToLv95(...frame.toGeo(x, y));
+    const o = at(0, 0);
+    const xp = at(B, 0);
+    const xm = at(-B, 0);
+    const yp = at(0, B);
+    const ym = at(0, -B);
+    this.frame = frame;
+    this.aff = {
+      e0: o.e,
+      n0: o.n,
+      dedx: (xp.e - xm.e) / (2 * B),
+      dndx: (xp.n - xm.n) / (2 * B),
+      dedy: (yp.e - ym.e) / (2 * B),
+      dndy: (yp.n - ym.n) / (2 * B),
+    };
+    this.near = null; // the fine grid is frame-relative
+  }
+
+  /** local metres -> LV95 {e, n} */
+  toLv95(x, y) {
+    const a = this.aff;
+    return {
+      e: a.e0 + x * a.dedx + y * a.dedy,
+      n: a.n0 + x * a.dndx + y * a.dndy,
+    };
+  }
+
+  /**
+   * Discover tiles for a circle around local (cx, cy) and start loading the
+   * 2 m grids. Returns when the item index is complete; onProgress(loaded,
+   * total) fires as tile data arrives.
+   */
+  async prepare(cx, cy, radius, onProgress = () => {}) {
     const pad = 100;
-    const corners = [
-      lv95ToWgs84(exitE - radius - pad, exitN - radius - pad),
-      lv95ToWgs84(exitE + radius + pad, exitN + radius + pad),
-    ];
-    const bbox = [
-      Math.min(corners[0][0], corners[1][0]),
-      Math.min(corners[0][1], corners[1][1]),
-      Math.max(corners[0][0], corners[1][0]),
-      Math.max(corners[0][1], corners[1][1]),
-    ].join(",");
+    const r = radius + pad;
+    const b = cornerBounds(cx, cy, r, (x, y) => this.frame.toGeo(x, y));
+    const bbox = [b.u0, b.v0, b.u1, b.v1].join(",");
 
     let url = `${STAC_ITEMS}?bbox=${bbox}&limit=100`;
     while (url) {
@@ -68,12 +134,13 @@ export class Dem {
     }
 
     // Kick off loads for tiles actually touching the circle.
+    const c = this.toLv95(cx, cy);
     const wanted = [];
     for (const key of this.items.keys()) {
       const [ek, nk] = key.split("-").map(Number);
-      const de = Math.max(0, Math.max(ek * 1000 - exitE, exitE - (ek + 1) * 1000));
-      const dn = Math.max(0, Math.max(nk * 1000 - exitN, exitN - (nk + 1) * 1000));
-      if (de * de + dn * dn <= (radius + pad) ** 2) wanted.push(key);
+      const de = Math.max(0, Math.max(ek * 1000 - c.e, c.e - (ek + 1) * 1000));
+      const dn = Math.max(0, Math.max(nk * 1000 - c.n, c.n - (nk + 1) * 1000));
+      if (de * de + dn * dn <= r ** 2) wanted.push(key);
     }
     let loaded = 0;
     onProgress(0, wanted.length);
@@ -113,9 +180,19 @@ export class Dem {
   }
 
   /**
-   * Synchronous bilinear sample of the 2 m mosaic at LV95 (e, n).
+   * Synchronous bilinear sample of the 2 m mosaic at local (x, y).
    * Only valid after prepare() resolved (tiles cached). NaN outside/nodata.
    */
+  sample(x, y) {
+    // Inlined rather than via toLv95: this runs ~90k times per recompute.
+    const a = this.aff;
+    return this.sample2(
+      a.e0 + x * a.dedx + y * a.dedy,
+      a.n0 + x * a.dndx + y * a.dndy
+    );
+  }
+
+  /** Bilinear sample of the 2 m mosaic at LV95 (e, n) — internal. */
   sample2(e, n) {
     const p = this.tiles2.get(tileKey(e, n));
     if (!p || !p._v) return NaN;
@@ -151,10 +228,11 @@ export class Dem {
   }
 
   /**
-   * Exit elevation from the 0.5 m COG (windowed range-read), bilinear.
-   * Falls back to the 2 m mosaic when the fine tile is unavailable.
+   * Exit elevation at local (x, y) from the 0.5 m COG (windowed range-read),
+   * bilinear. Falls back to the 2 m mosaic when the fine tile is unavailable.
    */
-  async elevation05(e, n) {
+  async elevationFine(x, y) {
+    const { e, n } = this.toLv95(x, y);
     const item = this.items.get(tileKey(e, n));
     if (item?.href05) {
       try {
@@ -191,7 +269,7 @@ export class Dem {
       }
     }
     await this.settle();
-    return this.sample2(e, n);
+    return this.sample(x, y);
   }
 
   /**
@@ -210,83 +288,119 @@ export class Dem {
    * When `targetAlt` is given (e.g. the GPS altitude of a recorded exit),
    * candidates whose ground elevation disagrees with it are penalized —
    * this rescues points whose horizontal GPS error puts them onto the face
-   * below the real exit.
+   * below the real exit. That altitude is uncertain on two counts: GNSS
+   * vertical error, routinely 5-10 m and the dominant term, and a datum gap
+   * (the receiver reports MSL through its own coarse geoid model, `z` is
+   * LN02) worth a metre or two here and far more once the DEM is not Swiss.
+   * ALT_TOL is that combined uncertainty. Inside it the penalty is soft
+   * rather than zero: a hard dead zone would stop discriminating entirely,
+   * letting a bench a few metres below the exit outrank the true lip on the
+   * distance term alone. Outside it the full weight resumes. ALT_TOL must
+   * track the vertical uncertainty of whatever DEM source is in use rather
+   * than stay pinned to swissALTI3D — and it is a heuristic weight, worth
+   * recalibrating against real tracks rather than trusting as tuned.
    * Call after prepare()/settle() (and ideally loadNearField()).
-   * Returns {e, n, moved}.
+   * Takes and returns local metres: {x, y, moved}.
    */
-  snapToLip(e, n, { radius = 14, step = 0.75, probe = 3.5, targetAlt = null } = {}) {
+  snapToLip(x, y, { radius = 14, step = 0.75, probe = 3.5, targetAlt = null } = {}) {
     const DROP_CAP = 60;
-    let best = { e, n, score: -Infinity };
-    for (let de = -radius; de <= radius; de += step) {
-      for (let dn = -radius; dn <= radius; dn += step) {
-        const r = Math.hypot(de, dn);
+    const ALT_TOL = 8; // m of GNSS + datum slack before the full weight bites
+    const ALT_SOFT = 0.15; // per m inside ALT_TOL: keeps ties breaking
+    const ALT_HARD = 0.6; // per m beyond it
+    let best = { x, y, score: -Infinity };
+    for (let dx = -radius; dx <= radius; dx += step) {
+      for (let dy = -radius; dy <= radius; dy += step) {
+        const r = Math.hypot(dx, dy);
         if (r > radius) continue;
-        const ce = e + de;
-        const cn = n + dn;
-        const z = this.nearSample(ce, cn);
+        const cx = x + dx;
+        const cy = y + dy;
+        const z = this.nearSample(cx, cy);
         if (!Number.isFinite(z)) continue;
         let drop = 0;
         let rise = 0;
         for (let i = 0; i < 16; i++) {
           const az = (i * 2 * Math.PI) / 16;
-          const zp = this.nearSample(ce + Math.sin(az) * probe, cn + Math.cos(az) * probe);
+          const zp = this.nearSample(cx + Math.sin(az) * probe, cy + Math.cos(az) * probe);
           if (!Number.isFinite(zp)) continue;
           drop = Math.max(drop, z - zp);
           rise = Math.max(rise, zp - z);
         }
         let score =
           Math.min(drop, DROP_CAP) - 2 * Math.max(0, rise - 2) - 0.7 * r;
-        if (targetAlt !== null) score -= Math.abs(z - targetAlt) * 0.6;
-        if (score > best.score) best = { e: ce, n: cn, score };
+        if (targetAlt !== null) {
+          const dz = Math.abs(z - targetAlt);
+          score -= ALT_SOFT * dz + ALT_HARD * Math.max(0, dz - ALT_TOL);
+        }
+        if (score > best.score) best = { x: cx, y: cy, score };
       }
     }
-    return { e: best.e, n: best.n, moved: Math.hypot(best.e - e, best.n - n) };
+    return { x: best.x, y: best.y, moved: Math.hypot(best.x - x, best.y - y) };
   }
 
   /**
-   * Load a composite 0.5 m grid covering ±radius metres around (e, n) —
-   * windowed range-reads from up to four 1 km COGs blitted into one array.
-   * Powers the near-field clearance analysis; call after prepare().
+   * Load a composite 0.5 m grid covering ±radius metres around local
+   * (cx, cy), aligned to the local ENU frame. Powers the near-field
+   * clearance analysis; call after prepare().
    */
-  async loadNearField(e, n, radius = 170) {
+  async loadNearField(cx, cy, radius = 170) {
     const res = 0.5;
-    const west = e - radius;
-    const north = n + radius;
-    const size = Math.ceil((2 * radius) / res);
-    const data = new Float32Array(size * size).fill(NaN);
+
+    // Pass 1: composite the tiles in their OWN grid, over the bounding box
+    // of the (rotated) local square. Compositing here rather than sampling
+    // straight into the local grid is what keeps 1 km tile joins seamless —
+    // interpolating across a join needs neighbours from two different tile
+    // arrays, and would punch a half-metre gutter down every seam.
+    // PAD is bilinear reach plus rounding slack — the rotation itself needs
+    // none, because cornerBounds already contains the rotated square exactly.
+    const PAD = 4;
+    const b = cornerBounds(cx, cy, radius, (x, y) => {
+      const p = this.toLv95(x, y);
+      return [p.e, p.n];
+    });
+    // Snap the composite to the tiles' OWN lattice: their origins are exact
+    // kilometres, hence exact multiples of res, so flooring here makes pass 1
+    // an exact integer copy. Left unsnapped, round() displaces the whole
+    // composite by up to res/2 per axis from the lattice pass 2 assumes —
+    // uniform, invisible, and on a 70° face decimetres of height error right
+    // at the lip, where this grid exists to be trusted.
+    const e0 = Math.floor((b.u0 - PAD) / res) * res;
+    const n1 = Math.ceil((b.v1 + PAD) / res) * res;
+    const e1 = b.u1 + PAD;
+    const n0 = b.v0 - PAD;
+    const sw = Math.ceil((e1 - e0) / res);
+    const sh = Math.ceil((n1 - n0) / res);
+    const src = new Float32Array(sw * sh).fill(NaN);
 
     const jobs = [];
-    for (const ek of [Math.floor(west / 1000), Math.floor((e + radius) / 1000)]) {
-      for (const nk of [Math.floor((n - radius) / 1000), Math.floor(north / 1000)]) {
-        const key = `${ek}-${nk}`;
-        if (jobs.some((j) => j.key === key)) continue;
-        const item = this.items.get(key);
-        if (item?.href05) jobs.push({ key, href: item.href05 });
+    for (let ek = Math.floor(e0 / 1000); ek <= Math.floor(e1 / 1000); ek++) {
+      for (let nk = Math.floor(n0 / 1000); nk <= Math.floor(n1 / 1000); nk++) {
+        const item = this.items.get(`${ek}-${nk}`);
+        if (item?.href05) jobs.push(item.href05);
       }
     }
     await Promise.all(
-      jobs.map(async ({ href }) => {
+      jobs.map(async (href) => {
         try {
           const tiff = await this._tiff(href);
           const img = await tiff.getImage(0);
           const [te0, tn1] = img.getOrigin();
           const tres = Math.abs(img.getResolution()[0]);
           // overlap of the composite with this tile, in tile pixels
-          const x0 = Math.max(0, Math.floor((west - te0) / tres));
-          const y0 = Math.max(0, Math.floor((tn1 - north) / tres));
-          const x1 = Math.min(img.getWidth(), Math.ceil((west + size * res - te0) / tres));
-          const y1 = Math.min(img.getHeight(), Math.ceil((tn1 - (north - size * res)) / tres));
+          const x0 = Math.max(0, Math.floor((e0 - te0) / tres));
+          const y0 = Math.max(0, Math.floor((tn1 - n1) / tres));
+          const x1 = Math.min(img.getWidth(), Math.ceil((e1 - te0) / tres));
+          const y1 = Math.min(img.getHeight(), Math.ceil((tn1 - n0) / tres));
           if (x1 <= x0 || y1 <= y0) return;
           const win = await img.readRasters({ window: [x0, y0, x1, y1], interleave: true });
           const ww = x1 - x0;
           for (let y = y0; y < y1; y++) {
-            const gy = Math.round((tn1 - y * tres - north) / -res);
-            if (gy < 0 || gy >= size) continue;
+            const gy = Math.round((tn1 - y * tres - n1) / -res);
+            if (gy < 0 || gy >= sh) continue;
             for (let x = x0; x < x1; x++) {
-              const gx = Math.round((te0 + x * tres - west) / res);
-              if (gx < 0 || gx >= size) continue;
+              const gx = Math.round((te0 + x * tres - e0) / res);
+              if (gx < 0 || gx >= sw) continue;
               const v = win[(y - y0) * ww + (x - x0)];
-              if (v > NODATA_BELOW) data[gy * size + gx] = v;
+              if (v > NODATA_BELOW) src[gy * sw + gx] = v;
             }
           }
         } catch {
@@ -294,19 +408,66 @@ export class Dem {
         }
       })
     );
-    this.near = { data, size, west, north, res };
+
+    // Pass 2: resample into the local grid (rotated by the convergence
+    // between the tile grid's north and true north — up to ~2° in CH).
+    //
+    // TWO outputs, because the two consumers want opposite things. `data` is
+    // the bilinear blend, which is what nearSample/snapToLip want. `env` is
+    // the max over the same source posts, which is what nearMax needs: the
+    // near-field check is built on an UPPER envelope of the rock, and a blend
+    // is a convex combination, so it always sits at or below the highest post
+    // it came from. Feeding blends to nearMax would quietly shave metres off
+    // a lip and report the missing rock as air — an error that only ever
+    // points toward "looks safer than it is".
+    const size = Math.ceil((2 * radius) / res);
+    const data = new Float32Array(size * size).fill(NaN);
+    const env = new Float32Array(size * size).fill(NaN);
+    const xMin = cx - radius;
+    const yMax = cy + radius;
+    const a = this.aff;
+    for (let gy = 0; gy < size; gy++) {
+      const ly = yMax - (gy + 0.5) * res;
+      for (let gx = 0; gx < size; gx++) {
+        const lx = xMin + (gx + 0.5) * res;
+        const sx = (a.e0 + lx * a.dedx + ly * a.dedy - e0) / res - 0.5;
+        const sy = (n1 - (a.n0 + lx * a.dndx + ly * a.dndy)) / res - 0.5;
+        const xi = Math.floor(sx);
+        const yi = Math.floor(sy);
+        if (xi < 0 || yi < 0 || xi + 1 >= sw || yi + 1 >= sh) continue;
+        const fx = sx - xi;
+        const fy = sy - yi;
+        const z00 = src[yi * sw + xi];
+        const z10 = src[yi * sw + xi + 1];
+        const z01 = src[(yi + 1) * sw + xi];
+        const z11 = src[(yi + 1) * sw + xi + 1];
+        // Weighted over the valid corners only, so a nodata hole erodes
+        // rather than spreading a cell in every direction.
+        let v = 0;
+        let wsum = 0;
+        let mx = -Infinity;
+        if (z00 === z00) { const w = (1 - fx) * (1 - fy); v += z00 * w; wsum += w; if (z00 > mx) mx = z00; }
+        if (z10 === z10) { const w = fx * (1 - fy); v += z10 * w; wsum += w; if (z10 > mx) mx = z10; }
+        if (z01 === z01) { const w = (1 - fx) * fy; v += z01 * w; wsum += w; if (z01 > mx) mx = z01; }
+        if (z11 === z11) { const w = fx * fy; v += z11 * w; wsum += w; if (z11 > mx) mx = z11; }
+        if (wsum > 0.5) data[gy * size + gx] = v / wsum;
+        if (mx > -Infinity) env[gy * size + gx] = mx;
+      }
+    }
+
+    this.near = { data, env, size, xMin, yMax, res };
     return this.near;
   }
 
   /**
-   * Bilinear sample of the 0.5 m near-field grid; falls back to the 2 m
-   * mosaic when the fine grid isn't loaded or has no data here.
+   * Bilinear sample of the 0.5 m near-field grid at local (X, Y); falls back
+   * to the 2 m mosaic when the fine grid isn't loaded or has no data here.
    */
-  nearSample(E, N) {
+  nearSample(X, Y) {
     const g = this.near;
     if (g) {
-      const x = (E - g.west) / g.res - 0.5;
-      const y = (g.north - N) / g.res - 0.5;
+      const x = (X - g.xMin) / g.res - 0.5;
+      const y = (g.yMax - Y) / g.res - 0.5;
       const xi = Math.floor(x);
       const yi = Math.floor(y);
       if (xi >= 0 && yi >= 0 && xi + 1 < g.size && yi + 1 < g.size) {
@@ -324,15 +485,20 @@ export class Dem {
         if (Number.isFinite(v)) return v;
       }
     }
-    return this.sample2(E, N);
+    return this.sample(X, Y);
   }
 
-  /** Upper envelope: max of the 4 posts around (E, N) on the 0.5 m grid. */
-  nearMax(E, N) {
+  /**
+   * Upper envelope at local (X, Y): max of the 4 envelope cells around it,
+   * each of which is itself the max of the source posts it was built from
+   * (see loadNearField). Never a blended value — the near-field verdict
+   * depends on this erring high.
+   */
+  nearMax(X, Y) {
     const g = this.near;
     if (!g) return NaN;
-    const x = (E - g.west) / g.res - 0.5;
-    const y = (g.north - N) / g.res - 0.5;
+    const x = (X - g.xMin) / g.res - 0.5;
+    const y = (g.yMax - Y) / g.res - 0.5;
     const xi = Math.floor(x);
     const yi = Math.floor(y);
     let mx = -Infinity;
@@ -340,7 +506,7 @@ export class Dem {
       const xx = xi + dx;
       const yy = yi + dy;
       if (xx < 0 || yy < 0 || xx >= g.size || yy >= g.size) continue;
-      const v = g.data[yy * g.size + xx];
+      const v = g.env[yy * g.size + xx];
       if (Number.isFinite(v) && v > mx) mx = v;
     }
     return mx === -Infinity ? NaN : mx;
@@ -352,7 +518,7 @@ export class Dem {
    * Returns [{d, tDrop}] at `step` spacing; tDrop uses the HIGHEST ground
    * found across offsets — conservative by construction.
    */
-  nearRay(e, n, exitAlt, azimuth, maxDist = 150, step = 0.5, lateral = [-2.5, 0, 2.5]) {
+  nearRay(x, y, exitAlt, azimuth, maxDist = 150, step = 0.5, lateral = [-2.5, 0, 2.5]) {
     const se = Math.sin(azimuth);
     const cn = Math.cos(azimuth);
     const out = [];
@@ -364,9 +530,7 @@ export class Dem {
       let hi = -Infinity;
       for (const off0 of lateral) {
         const off = off0 * grow;
-        const E = e + se * d + cn * off;
-        const N = n + cn * d - se * off;
-        const z = this.nearMax(E, N);
+        const z = this.nearMax(x + se * d + cn * off, y + cn * d - se * off);
         if (Number.isFinite(z) && z > hi) hi = z;
       }
       out.push({ d, tDrop: hi === -Infinity ? NaN : exitAlt - hi });
@@ -376,14 +540,14 @@ export class Dem {
 
   /**
    * Terrain drops below exitAlt along one azimuth (radians, clockwise from
-   * north). Returns [{d, tDrop}] at `step` m spacing out to maxDist.
+   * true north). Returns [{d, tDrop}] at `step` m spacing out to maxDist.
    */
-  sampleRay(exitE, exitN, exitAlt, azimuth, maxDist, step = 4) {
+  sampleRay(x, y, exitAlt, azimuth, maxDist, step = 4) {
     const se = Math.sin(azimuth);
     const cn = Math.cos(azimuth);
     const out = [];
     for (let d = step; d <= maxDist; d += step) {
-      const z = this.sample2(exitE + se * d, exitN + cn * d);
+      const z = this.sample(x + se * d, y + cn * d);
       out.push({ d, tDrop: exitAlt - z }); // NaN propagates
     }
     return out;

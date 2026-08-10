@@ -1,4 +1,5 @@
-import { wgs84ToLv95, lv95ToWgs84 } from "./lv95.js";
+import { wgs84ToLv95 } from "./lv95.js";
+import { makeFrame } from "./frame.js";
 import {
   makeProfile,
   analyzeAzimuth,
@@ -148,14 +149,20 @@ const nextPaint = () =>
 
 let tilePoll = null; // interval handle; null whenever the network is settled
 
-/** dem.prepare + settle, reporting the phase and a determinate bar. */
-async function fetchTiles(e, n, radius, label) {
-  status(`${label}…`, "busy");
-  await dem.prepare(e, n, radius, (a, b) => {
+/**
+ * dem.prepare + settle around local (x, y), reporting the phase and a
+ * determinate bar. `isCurrent` gates the reporting only: a superseded caller
+ * still wants its tiles cached, but must not narrate over the live one's
+ * label — the card it would be writing into belongs to somebody else.
+ */
+async function fetchTiles(x, y, radius, label, isCurrent = () => true) {
+  if (isCurrent()) status(`${label}…`, "busy");
+  await dem.prepare(x, y, radius, (a, b) => {
+    if (!isCurrent()) return;
     status(`${label} ${a}/${b}…`, "busy");
     setProgress(a, b);
   });
-  setProgress(null); // the phases after this have no count to give
+  if (isCurrent()) setProgress(null); // the phases after this have no count
   await dem.settle();
 }
 
@@ -165,7 +172,13 @@ let viewer;
 let surface;
 let dial;
 let chart;
-let exit = null; // {e, n, alt, anchor: Cartesian3, preparedRadius}
+// {lon, lat, alt, frame, local: {x, y}, anchor: Cartesian3, preparedRadius}
+// lon/lat is the exit's identity — what the hash carries and what a shared
+// link reproduces. `frame` is the local ENU frame the DEM is sampled in and
+// `local` the exit's place in it, which is the origin until snapping moves
+// it; the frame stays anchored where the exit was requested so the
+// near-field grid built around that point stays valid.
+let exit = null;
 let results = null; // per-azimuth analyzeAzimuth results
 let selectedAz = null; // degrees
 let armed = false;
@@ -370,47 +383,85 @@ function pickExit(windowPos) {
   );
 }
 
-async function setExitAt(lon, lat, fromHash = false, exactLv95 = null, snapOpts = null) {
+/**
+ * Placement generation. `dem` carries ONE frame at a time, so a placement
+ * that is still awaiting tiles when the next one starts must not finish: its
+ * continuation would snap, measure and publish using local coordinates read
+ * against somebody else's frame — a different mountain, silently. Every
+ * resumption point checks whether it is still the current placement.
+ */
+let exitGen = 0;
+
+/**
+ * Put `dem` back on the live exit's frame after a failed placement, which
+ * leaves it anchored on the point that failed. Without this the old exit
+ * survives while every sample around it is taken somewhere else entirely.
+ */
+async function reanchorToExit(gen) {
+  if (!exit || gen !== exitGen) return;
+  dem.setFrame(exit.frame);
+  try {
+    await dem.prepare(exit.local.x, exit.local.y, exit.preparedRadius);
+    await dem.settle();
+    if (gen !== exitGen) return;
+    await dem.loadNearField(0, 0, 220);
+  } catch (err) {
+    console.error(err); // the frame guard in update() keeps this from lying
+  }
+}
+
+/** Resolves true when this call is the one that placed the exit. */
+async function setExitAt(lon, lat, fromHash = false, snapOpts = null) {
+  const gen = ++exitGen;
+  const superseded = () => gen !== exitGen;
   const endExitWork = beginExitWork();
   try {
     const p = params();
-    // exactLv95 avoids WGS84 round-trip drift when restoring a shared hash —
-    // sub-metre shifts genuinely flip verdicts on a knife-edge lip.
-    let { e, n } = exactLv95 ?? wgs84ToLv95(lon, lat);
+    const frame = makeFrame(lon, lat);
+    dem.setFrame(frame);
     const radius = neededRadius(p);
-    await fetchTiles(e, n, radius, "fetching swissALTI3D tiles");
+    await fetchTiles(0, 0, radius, "fetching swissALTI3D tiles", () => !superseded());
+    if (superseded()) return false;
 
     // 0.5 m grid loads first: the snap searches on it, and the widened
     // radius keeps 150 m near-field rays inside even after a 35 m snap.
     status("loading 0.5 m near-field…", "busy");
     await nextPaint(); // snapToLip below is a long synchronous search
-    await dem.loadNearField(e, n, 220);
+    await dem.loadNearField(0, 0, 220);
+    if (superseded()) return false;
+    let x = 0;
+    let y = 0;
     let moved = 0;
     if ($("chk-snap").checked && !fromHash) {
-      const s = dem.snapToLip(e, n, snapOpts ?? {});
-      e = s.e;
-      n = s.n;
+      const s = dem.snapToLip(0, 0, snapOpts ?? {});
+      x = s.x;
+      y = s.y;
       moved = s.moved;
     }
-    const alt = await dem.elevation05(e, n);
+    const alt = await dem.elevationFine(x, y);
+    if (superseded()) return false;
     if (!Number.isFinite(alt)) {
       status("no elevation data here", "error");
-      return;
+      await reanchorToExit(gen);
+      return false;
     }
 
     // Anchor the visuals to the *rendered* terrain at the snapped spot, so
     // the cone apex sits on the mesh the user sees (analysis stays in DEM
     // space — the two heights differ by geoid offset and mesh LOD).
-    const [lon2, lat2] = lv95ToWgs84(e, n);
+    const [lon2, lat2] = frame.toGeo(x, y);
     const cartos = [Cesium.Cartographic.fromDegrees(lon2, lat2)];
     await Cesium.sampleTerrainMostDetailed(viewer.terrainProvider, cartos);
+    if (superseded()) return false;
     const anchor = Cesium.Cartesian3.fromDegrees(lon2, lat2, cartos[0].height);
 
-    exit = { e, n, alt, anchor, preparedRadius: radius };
+    exit = { lon: lon2, lat: lat2, alt, frame, local: { x, y }, anchor, preparedRadius: radius };
+    const lv95 = wgs84ToLv95(lon2, lat2); // display only — swisstopo cross-reference
     $("exit-readout").className = "readout";
     $("exit-readout").textContent =
-      `${lat2.toFixed(5)}°N ${lon2.toFixed(5)}°E\n` +
-      `LV95 ${Math.round(e)} / ${Math.round(n)}\n` +
+      `${Math.abs(lat2).toFixed(5)}°${lat2 < 0 ? "S" : "N"} ` +
+      `${Math.abs(lon2).toFixed(5)}°${lon2 < 0 ? "W" : "E"}\n` +
+      `LV95 ${Math.round(lv95.e)} / ${Math.round(lv95.n)}\n` +
       `exit alt ${alt.toFixed(1)} m` +
       (moved > 1 ? `  (snapped ${moved.toFixed(0)} m)` : "");
 
@@ -432,9 +483,13 @@ async function setExitAt(lon, lat, fromHash = false, exactLv95 = null, snapOpts 
     await update();
     writeHash();
     chrome.openSection("analysis-section");
+    return true;
   } catch (err) {
     console.error(err);
+    if (superseded()) return false;
     status(`error: ${err.message}`, "error");
+    await reanchorToExit(gen);
+    return false;
   } finally {
     endExitWork();
   }
@@ -454,6 +509,15 @@ function scheduleUpdate() {
 }
 
 /**
+ * True when `dem` is anchored on the frame the live exit's local coordinates
+ * belong to. False while a placement is in flight or after a failed one — and
+ * then sampling would silently read another mountain, so callers must bail.
+ * Orthogonal to `updateGen` below: that one keeps a stale RESULT from being
+ * written, this one keeps a sample from being taken in the wrong place.
+ */
+const demMatchesExit = () => !!exit && dem.frame === exit.frame;
+
+/**
  * Recompute everything for the current sliders. Reports its own failures:
  * scheduleUpdate fires it as a bare timer callback, so an unhandled rejection
  * here would strand the last "busy" status — leaving the indicator spinning
@@ -463,8 +527,9 @@ function scheduleUpdate() {
  */
 let updateGen = 0;
 async function update() {
-  if (!exit || !viewer) return;
+  if (!exit || !viewer || !demMatchesExit()) return;
   const gen = ++updateGen;
+  const current = () => gen === updateGen && demMatchesExit();
   try {
     const p = params();
     const prof = planningProfile(p);
@@ -474,24 +539,27 @@ async function update() {
 
     const radius = neededRadius(p);
     if (radius > exit.preparedRadius) {
-      await fetchTiles(exit.e, exit.n, radius, "fetching more tiles");
-      exit.preparedRadius = radius; // the tiles really are cached now
-      if (gen !== updateGen) return;
+      await fetchTiles(exit.local.x, exit.local.y, radius, "fetching more tiles", current);
+      // Guard BEFORE the bookkeeping: the tiles really are cached, but if a
+      // placement landed while we fetched then `exit` is a different object
+      // in a different frame, and this radius was never prepared for it.
+      if (!current()) return;
+      exit.preparedRadius = radius;
     }
 
     status("analyzing…", "busy");
     // The 72-azimuth loop below blocks the thread; without a frame here the
     // indicator would only appear once the work it announces is already done.
     await nextPaint();
-    if (gen !== updateGen) return;
+    if (!current()) return;
     const maxDist = Math.min(prof.maxRadius, radius);
     results = [];
     for (let i = 0; i < AZ_COUNT; i++) {
       const az = (i * 2 * Math.PI) / AZ_COUNT;
       // Near field: 0.5 m envelope + perpendicular clearance (first 150 m).
       // Far field: 2 m vertical clearance, starting where the near field ends.
-      const near = analyzeNearField(prof, dem.nearRay(exit.e, exit.n, exit.alt, az));
-      const samples = dem.sampleRay(exit.e, exit.n, exit.alt, az, maxDist, RAY_STEP);
+      const near = analyzeNearField(prof, dem.nearRay(exit.local.x, exit.local.y, exit.alt, az));
+      const samples = dem.sampleRay(exit.local.x, exit.local.y, exit.alt, az, maxDist, RAY_STEP);
       const far = analyzeAzimuth(prof, samples, { dMin: 140 });
       far.near = near;
       far.verdict = worseVerdict(nearVerdictFor(near), verdictFor(far.minClearance));
@@ -517,7 +585,7 @@ async function update() {
 
 /* ---------------- heading selection ---------------- */
 function selectHeading(azDeg, keep = false) {
-  if (!exit || !results) return;
+  if (!exit || !results || !demMatchesExit()) return;
   const i = Math.round(azDeg / (360 / AZ_COUNT)) % AZ_COUNT;
   selectedAz = (i * 360) / AZ_COUNT;
   const p = params();
@@ -525,14 +593,14 @@ function selectHeading(azDeg, keep = false) {
   const bestProf = p.margin > 0 ? makeProfile(p) : null;
   const azRad = (selectedAz * Math.PI) / 180;
   const maxDist = Math.min(prof.maxRadius, exit.preparedRadius);
-  const samples = dem.sampleRay(exit.e, exit.n, exit.alt, azRad, maxDist, RAY_STEP);
+  const samples = dem.sampleRay(exit.local.x, exit.local.y, exit.alt, azRad, maxDist, RAY_STEP);
   const r = results[i];
 
   dial.update({ selected: selectedAz });
   const v = r.verdict ?? verdictFor(r.minClearance);
   const near = r.near;
   // measured rock drop from the 0.5 m envelope, model-free
-  const nearSamples = dem.nearRay(exit.e, exit.n, exit.alt, azRad, 25);
+  const nearSamples = dem.nearRay(exit.local.x, exit.local.y, exit.alt, azRad, 25);
   const dropAtOut = (dd) => {
     const s = nearSamples.find((q) => q.d >= dd);
     return s && Number.isFinite(s.tDrop) ? Math.round(s.tDrop) : "–";
@@ -544,7 +612,7 @@ function selectHeading(azDeg, keep = false) {
   else nearLine = "";
   $("heading-stats").className = "readout";
   $("heading-stats").textContent =
-    `${String(Math.round(selectedAz)).padStart(3, "0")}°  ${v === "nodata" ? "no data" : v.toUpperCase()}\n` +
+    `${String(Math.round(selectedAz)).padStart(3, "0")}°T  ${v === "nodata" ? "no data" : v.toUpperCase()}\n` +
     nearLine +
     `drop @5/10/20 m out: ${dropAtOut(5)}/${dropAtOut(10)}/${dropAtOut(20)} m\n` +
     (Number.isFinite(r.minClearance)
@@ -579,7 +647,7 @@ function selectHeading(azDeg, keep = false) {
   // first time the profile opens so chart and map are both visible.
   if ($("profile-panel").hidden && isPhone()) chrome.setSheet("peek");
   $("profile-panel").hidden = false;
-  $("profile-title").textContent = `heading ${String(Math.round(selectedAz)).padStart(3, "0")}° · exit ${Math.round(exit.alt)} m`;
+  $("profile-title").textContent = `heading ${String(Math.round(selectedAz)).padStart(3, "0")}°T · exit ${Math.round(exit.alt)} m`;
   chart.update(samples, prof, exit.alt, r, selectedAz, trackCurve(), bestProf);
   // Snap the ghost aim to an explicit dial/surface selection, but leave a
   // manually adjusted aim alone during recomputes (keep=true).
@@ -675,18 +743,20 @@ async function gotoTrackExit() {
   const h0 = track.flight.heading0 ?? 0;
   // GPS horizontal error routinely puts the reported point over the edge
   // onto the face below; a wider, altitude-aware snap recovers the lip.
-  await setExitAt(s.lon, s.lat, false, null, { radius: 35, targetAlt: s.h });
-  if (!exit) return;
+  // Test the placement, not `exit`: a track exiting outside DEM coverage
+  // leaves the PREVIOUS exit standing, and flying to it would frame a
+  // different mountain with every confidence.
+  if (!(await setExitAt(s.lon, s.lat, false, { radius: 35, targetAlt: s.h }))) return;
 
   // Camera: behind the exit, opposite the flight direction, looking along
   // it — clamped above the rendered terrain (the backdrop is often a wall).
   const carto = Cesium.Cartographic.fromCartesian(exit.anchor);
-  const lat = Cesium.Math.toDegrees(carto.latitude);
-  const lon = Cesium.Math.toDegrees(carto.longitude);
   const back = 1100;
   const rad = (h0 * Math.PI) / 180;
-  const camLat = lat - (Math.cos(rad) * back) / 111320;
-  const camLon = lon - (Math.sin(rad) * back) / (111320 * Math.cos((lat * Math.PI) / 180));
+  const [camLon, camLat] = exit.frame.toGeo(
+    exit.local.x - Math.sin(rad) * back,
+    exit.local.y - Math.cos(rad) * back
+  );
   const ground = [Cesium.Cartographic.fromDegrees(camLon, camLat)];
   await Cesium.sampleTerrainMostDetailed(viewer.terrainProvider, ground);
   const camH = Math.max(carto.height + 500, (ground[0].height ?? 0) + 150);
@@ -768,8 +838,16 @@ function writeHash() {
   if (!exit) return;
   const p = params();
   const parts = [
-    exit.e.toFixed(1),
-    exit.n.toFixed(1),
+    // 7 decimals ≈ 1 cm, and the frame's toGeo/fromGeo are exact inverses,
+    // so the EXIT POINT reproduces to about a centimetre. The analysis
+    // around it does not reproduce quite that exactly: a restored session
+    // anchors its frame on the snapped point rather than on the original
+    // click, so the 0.5 m near-field lattice lands at a different phase and
+    // samples the same rock through differently-placed interpolation knots.
+    // Far field is unaffected; a knife-edge near-field margin can still
+    // land on the other side between writer and reader.
+    exit.lat.toFixed(7),
+    exit.lon.toFixed(7),
     +p.v0.toFixed(2), // hash keeps m/s (stable across display-unit changes)
     p.glide,
     +p.vInf.toFixed(2),
@@ -785,32 +863,24 @@ function restoreFromHash() {
   const h = location.hash.slice(1);
   if (!h) return;
   const f = h.split(",").map((s) => (s === "" ? null : parseFloat(s)));
-  if (!Number.isFinite(f[0]) || !Number.isFinite(f[1])) return;
-  const [e, n] = f;
+  if (f.length < 9) return;
+  const [lat, lon] = f;
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+  if (Math.abs(lat) > 90 || Math.abs(lon) > 180) return;
   const set = (id, v) => {
     if (Number.isFinite(v)) $(id).value = v;
   };
-  let az;
-  if (f.length >= 9) {
-    set("sl-v0", f[2] * KPH); // hash is m/s, sliders are km/h
-    set("sl-gl", f[3]);
-    set("sl-sp", f[4] * KPH);
-    set("sl-ramp", f[5]);
-    set("sl-hr", f[6]);
-    set("sl-margin", f[7]);
-    az = f[8];
-  } else {
-    // legacy two-phase hash: e,n,v0,hTrans,glide,hRange,az — dive is gone
-    set("sl-v0", f[2] * KPH);
-    set("sl-gl", f[4]);
-    set("sl-hr", f[5]);
-    az = f[6];
-  }
+  set("sl-v0", f[2] * KPH); // hash is m/s, sliders are km/h
+  set("sl-gl", f[3]);
+  set("sl-sp", f[4] * KPH);
+  set("sl-ramp", f[5]);
+  set("sl-hr", f[6]);
+  set("sl-margin", f[7]);
+  const az = f[8];
   syncOutputs();
-  const [lon, lat] = lv95ToWgs84(e, n);
   const anchorView = Cesium.Cartesian3.fromDegrees(lon, lat + 0.018, 3500);
-  setExitAt(lon, lat, true, { e, n }).then(() => {
-    if (Number.isFinite(az)) selectHeading(az);
+  setExitAt(lon, lat, true).then((ok) => {
+    if (ok && Number.isFinite(az)) selectHeading(az);
   });
   viewer.camera.flyTo({
     destination: anchorView,
@@ -857,8 +927,8 @@ const HELP = {
   margin: ["margin", "Safety derate: the surface, the heading verdicts and the solid chart line use sustained glide reduced by this percentage. The dotted chart line is the undiluted best estimate. 0 % means planning on your best-day numbers."],
   snap: ["snap to lip", "Clicks land on the rendered 3D mesh, which is metres coarser than the real data — usually a step back from the edge. Snapping moves the exit to the strongest nearby drop; for a track's exit it also matches the GPS altitude, since horizontal GPS error tends to put the point over the edge."],
   ghost: ["ghost", "Shows the recorded flight path, translated to the current exit with its turns preserved. Dashed violet in 3D and in the profile chart."],
-  aim: ["aim", "Compass direction of the ghost's initial flight. It snaps to the heading you pick on the dial, then adjusts freely — the whole recorded path rotates rigidly around the exit."],
-  verdicts: ["heading verdicts", "Each 5° heading combines two checks and shows the worse. Near the exit (first 150 m, 0.5 m terrain dilated by position uncertainty): metres of air between the flight path and rock, which must grow as the flight develops — red under ×1 of needed, amber under ×2. Further out (2 m terrain): vertical clearance under the planning trajectory — red below 30 m, amber below 100 m."],
+  aim: ["aim", "True direction (°T) of the ghost's initial flight, taken straight from the track's Doppler velocities. It snaps to the heading you pick on the dial, then adjusts freely — the whole recorded path rotates rigidly around the exit."],
+  verdicts: ["heading verdicts", "Headings are TRUE azimuths (°T) — north is true north, not grid or magnetic north; subtract your local declination to fly one off a compass. Each 5° heading combines two checks and shows the worse. Near the exit (first 150 m, 0.5 m terrain dilated by position uncertainty): metres of air between the flight path and rock, which must grow as the flight develops — red under ×1 of needed, amber under ×2. Further out (2 m terrain): vertical clearance under the planning trajectory — red below 30 m, amber below 100 m."],
 };
 const helpPop = document.createElement("div");
 helpPop.id = "help-pop";

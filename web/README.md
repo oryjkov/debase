@@ -11,6 +11,7 @@ everything comes straight from swisstopo's open-data endpoints (CORS-enabled).
 ```sh
 cd web && python3 -m http.server 8123
 # open http://localhost:8123
+node --test 'web/js/*.test.js'   # from the repo root
 ```
 
 Any static host works for deployment (GitHub Pages etc.).
@@ -53,7 +54,18 @@ Any static host works for deployment (GitHub Pages etc.).
   5/10/20 m out from the 0.5 m envelope.
 - Click the dial (or a surface sector) to open the altitude-vs-distance
   profile for that heading, with min-clearance and landing/strike markers.
+  Headings are **true** azimuths (`°T`) — subtract your local magnetic
+  declination to fly one off a compass.
 - The URL hash encodes exit + parameters + selected heading — shareable.
+  The exit is WGS84 `lat,lon` at 7 decimals (~1 cm), and since the local
+  frame's forward and inverse are exact inverses, the exit *point* restores
+  to about that. The analysis around it is very slightly less deterministic:
+  a restored session anchors its frame on the snapped exit rather than on
+  the original click, so the 0.5 m near-field lattice sits at a different
+  phase and interpolates the same rock from differently-placed knots. The
+  2 m far field is unaffected; a knife-edge near-field margin can flip.
+  Links minted before the coordinate rework carried LV95 eastings and are
+  not readable.
 - **Relief** (toolbar toggle, on by default) overlays 50 m contour lines
   and a steel-blue tint on slopes steeper than ~50°, on top of either
   base layer (Satellite/Map are the exclusive pair; Relief is additive). Draped imagery
@@ -84,12 +96,27 @@ Any static host works for deployment (GitHub Pages etc.).
 
 ## Design rules
 
+- **An exit is WGS84 lon/lat; analysis happens in a local ENU frame.** The
+  frame is anchored where the exit was requested, x metres true east and y
+  metres true north (`js/frame.js`), and it is the app's only angular
+  reference — so an azimuth is a true azimuth in the rays, on the dial, on
+  the surface, and in a track's Doppler heading, with nothing to convert
+  between them. Map projections live inside a DEM source as a storage
+  detail: `js/dem.js` calibrates an affine local→LV95 per exit (which comes
+  out as rotation by the meridian convergence — −1° to +1.75° across
+  Switzerland — times 1/k) and nothing outside it needs to know. Sampling
+  the tiles' grid at an angle is also why the 0.5 m near-field composite is
+  built in LV95 first and resampled into the frame second: interpolating
+  straight into the frame cannot cross a 1 km tile join.
 - **Visual terrain ≠ analysis terrain.** The Cesium mesh is for looking;
   all numbers are sampled from swissALTI3D COGs (2 m grid for rays, 0.5 m
   for the exit elevation) in LV95/LN02 via HTTP range requests (geotiff.js).
 - The trajectory surface is anchored to the *rendered* terrain height at the
   exit (ellipsoidal), while analysis runs in DEM space — both use drops
-  relative to the exit, so the geoid offset cancels.
+  relative to the exit, so the geoid offset cancels. The one place two
+  vertical datums are compared directly is the snap's `targetAlt` (a
+  receiver's MSL against LN02), and it is compared through a dead zone wide
+  enough to swallow the difference rather than be steered by it.
 - A trajectory meeting terrain is a **landing** when the local slope is
   < 25° at flying depth, a **strike** otherwise; clearance stats stop at the
   landing (the final flare would otherwise always read as zero clearance).
@@ -98,8 +125,10 @@ Any static host works for deployment (GitHub Pages etc.).
 
 - `js/model.js` — aerodynamic ODE flight model + per-azimuth analysis
   (unit-tested headlessly with node)
-- `js/dem.js` — STAC tile discovery, COG reads, lip snapping, ray sampling
-- `js/lv95.js` — swisstopo approximate WGS84↔LV95 formulas (~1 m)
+- `js/frame.js` — local ENU frame at an exit; the app's metric space
+- `js/dem.js` — STAC tile discovery, COG reads, lip snapping, ray sampling;
+  owns the local→LV95 projection
+- `js/lv95.js` — swisstopo approximate WGS84→LV95 formula (~1 m)
 - `js/surface.js` — the revolved capture surface (one instance per sector)
 - `js/dial.js`, `js/profile.js` — heading dial and profile chart
 - `js/track.js` — FlySight parse, jump segmentation, extraction, model fit
