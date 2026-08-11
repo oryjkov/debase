@@ -1,8 +1,10 @@
 name: Deploy to GitHub Pages
 
+# GitHub Pages is the canary: `canary` deploys here for manual testing,
+# and only a merge to `main` ships to debase.ch (via Cloudflare).
 on:
   push:
-    branches: [main]
+    branches: [canary]
   workflow_dispatch:
 
 permissions:
