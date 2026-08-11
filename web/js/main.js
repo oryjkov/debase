@@ -1007,6 +1007,60 @@ $("btn-sat").addEventListener("click", () => setLayer("sat"));
 $("btn-map").addEventListener("click", () => setLayer("map"));
 
 /**
+ * Fly the camera to the device's position. Camera only, no exit placement:
+ * desktop geolocation is Wi-Fi/IP-based and often kilometres off, and an
+ * exit is an expensive, explicit action — the user still clicks it in.
+ */
+function flyToDeviceLocation() {
+  if (!navigator.geolocation || !window.isSecureContext) {
+    status("geolocation needs a secure (https) context", "error");
+    return;
+  }
+  const btn = $("btn-locate");
+  btn.disabled = true;
+  status("locating…", "busy");
+  navigator.geolocation.getCurrentPosition(
+    async (pos) => {
+      const { longitude, latitude, accuracy } = pos.coords;
+      // Frame from the south so the point sits centred looking north, at a
+      // height that survives a failed terrain sample (outside Swiss data).
+      let groundH = 0;
+      try {
+        const g = [Cesium.Cartographic.fromDegrees(longitude, latitude)];
+        await Cesium.sampleTerrainMostDetailed(viewer.terrainProvider, g);
+        if (Number.isFinite(g[0]?.height)) groundH = g[0].height;
+      } catch {
+        // keep the sea-level fallback
+      }
+      viewer.camera.flyTo({
+        // 2 km south of the point, 2.6 km above its ground: pitch puts the
+        // point at screen centre (atan 2600/2000 ≈ 52°), looking north.
+        destination: Cesium.Cartesian3.fromDegrees(longitude, latitude - 0.018, groundH + 2600),
+        orientation: {
+          heading: 0,
+          pitch: Cesium.Math.toRadians(-52),
+        },
+        duration: 2.5,
+      });
+      btn.disabled = false;
+      status(`located to within ${Math.round(accuracy)} m`);
+    },
+    (err) => {
+      btn.disabled = false;
+      const msg =
+        err.code === err.PERMISSION_DENIED
+          ? "location permission denied"
+          : err.code === err.TIMEOUT
+            ? "locating timed out"
+            : "location unavailable";
+      status(msg, "error");
+    },
+    { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
+  );
+}
+$("btn-locate").addEventListener("click", flyToDeviceLocation);
+
+/**
  * Terrain view: 50 m contour lines + steep-slope tint rendered by the
  * globe material shader — geometry-true, unlike draped imagery, which
  * smears into vertical stripes on cliff faces. Combines with either base

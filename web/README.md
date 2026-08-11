@@ -80,6 +80,11 @@ Any static host works for deployment (GitHub Pages etc.).
   blind past 500 m of descent, no wind or wires or weather anywhere in the
   model. It is the one place that says plainly that this is a planning aid
   and the risk is the reader's.
+- **Locate** (the crosshair in the toolbar) flies the camera to the device's
+  position — GPS on a phone, Wi-Fi/IP on a desktop. Camera only: desktop
+  geolocation is routinely kilometres off, so it never places an exit; the
+  user still clicks that in. Needs a secure context (HTTPS or localhost)
+  and the browser's location permission.
 - **Relief** (toolbar toggle, on by default) overlays 50 m contour lines
   and a steel-blue tint on slopes steeper than ~50°, on top of either
   base layer (Satellite/Map are the exclusive pair; Relief is additive). Draped imagery
