@@ -27,6 +27,12 @@
       <h2>Exit</h2>
       <div class="row">
         <button id="btn-set" class="primary">Set exit point</button>
+        <form id="coord-form">
+          <input id="coord-input" type="text" inputmode="decimal" placeholder="46.55695, 7.98658"
+                 aria-label="GPS coordinates, latitude then longitude" spellcheck="false" autocomplete="off">
+        </form>
+      </div>
+      <div class="row">
         <label class="check"><input type="checkbox" id="chk-snap" checked>snap to lip</label><button class="help" data-help="snap" aria-label="explain snap to lip" type="button">?</button>
       </div>
       <div id="exit-readout" class="readout empty">

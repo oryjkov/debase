@@ -80,6 +80,12 @@ Any static host works for deployment (GitHub Pages etc.).
   blind past 500 m of descent, no wind or wires or weather anywhere in the
   model. It is the one place that says plainly that this is a planning aid
   and the risk is the reader's.
+- **Coordinates** (the input beside *Set exit point*) take decimal
+  lat/lon — `46.5569512,7.9865774`, space-separated, or a paste with
+  parentheses/degree marks. Enter flies the camera there and, unlike
+  Locate, also places the exit: a typed fix is deliberate and precise.
+  Snap-to-lip applies as it would to a click. Outside Swiss coverage it
+  only flies, and says so.
 - **Locate** (the crosshair in the toolbar) flies the camera to the device's
   position — GPS on a phone, Wi-Fi/IP on a desktop. Camera only: desktop
   geolocation is routinely kilometres off, so it never places an exit; the

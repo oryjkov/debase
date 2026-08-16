@@ -108,6 +108,22 @@ button.primary {
   cursor: pointer;
 }
 button.primary:hover { border-color: var(--ink-2); }
+
+/* typed lat/lon beside "Set exit point" — the keyboard route to the same act */
+#coord-form { flex: 1; display: flex; min-width: 0; }
+#coord-input {
+  width: 100%;
+  min-width: 0;
+  font: 500 12px var(--mono);
+  color: var(--ink);
+  background: rgba(242, 244, 241, 0.04);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  padding: 7px 9px;
+  outline: none;
+}
+#coord-input::placeholder { color: var(--ink-3); }
+#coord-input:focus { border-color: var(--ink-2); }
 button.primary.armed {
   background: var(--red);
   border-color: var(--red);

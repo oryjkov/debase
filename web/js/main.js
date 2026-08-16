@@ -1061,6 +1061,50 @@ function flyToDeviceLocation() {
 $("btn-locate").addEventListener("click", flyToDeviceLocation);
 
 /**
+ * Typed coordinates fly the camera there AND place the exit — unlike the
+ * locate button: a typed fix is deliberate and as precise as its author,
+ * not a Wi-Fi guess.
+ */
+
+/** "46.55, 7.98" / "46.55 7.98" / a pasted "(46.55°N, 7.98°E)" → {lat, lon}. */
+function parseLatLon(text) {
+  // Decimal degrees only: exactly two numbers, anything around them ignored.
+  // A DMS string yields more than two and is rejected rather than misread.
+  const nums = text.match(/-?\d+(?:\.\d+)?/g);
+  if (!nums || nums.length !== 2) return null;
+  const [lat, lon] = nums.map(parseFloat);
+  if (Math.abs(lat) > 90 || Math.abs(lon) > 180) return null;
+  return { lat, lon };
+}
+
+const coordForm = $("coord-form");
+const coordInput = $("coord-input");
+coordInput.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape") coordInput.blur();
+});
+coordForm.addEventListener("submit", (ev) => {
+  ev.preventDefault();
+  const p = parseLatLon(coordInput.value);
+  if (!p) {
+    status("could not parse — use lat, lon (decimal degrees)", "error");
+    return;
+  }
+  coordInput.blur();
+  // Same framing as a restored hash: from the north looking south, so an
+  // exit on a typical north-facing wall reads immediately.
+  viewer.camera.flyTo({
+    destination: Cesium.Cartesian3.fromDegrees(p.lon, p.lat + 0.018, 3500),
+    orientation: { heading: Cesium.Math.toRadians(180), pitch: Cesium.Math.toRadians(-20) },
+    duration: 2.0,
+  });
+  if (!Cesium.Rectangle.contains(CH_RECT(), Cesium.Cartographic.fromDegrees(p.lon, p.lat))) {
+    status("outside Swiss elevation coverage — no exit placed", "error");
+    return;
+  }
+  setExitAt(p.lon, p.lat);
+});
+
+/**
  * Terrain view: 50 m contour lines + steep-slope tint rendered by the
  * globe material shader — geometry-true, unlike draped imagery, which
  * smears into vertical stripes on cliff faces. Combines with either base
@@ -1168,3 +1212,17 @@ init().catch((err) => {
   console.error(err);
   status(`init failed: ${err.message}`, "error");
 });
+
+/* ---------------- automation hook ----------------
+ * Programmatic placement for testing: unlike hash restore, this goes through
+ * the same path as a map click, so snap-to-lip applies. `state()` reads back
+ * the per-sector verdicts (index i = heading i*5°T). */
+window.__debase = {
+  place: (lon, lat) => setExitAt(lon, lat),
+  state: () => ({
+    exit: exit ? { lat: exit.lat, lon: exit.lon, alt: exit.alt } : null,
+    readout: $("exit-readout").textContent,
+    status: $("status").textContent,
+    verdicts: results ? results.map((r) => r.verdict) : null,
+  }),
+};
